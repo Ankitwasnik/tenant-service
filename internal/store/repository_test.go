@@ -11,6 +11,7 @@ import (
 
 	"github.com/Ankitwasnik/tenant-service/internal/domain"
 	"github.com/Ankitwasnik/tenant-service/internal/store"
+	"github.com/Ankitwasnik/tenant-service/internal/testutil"
 )
 
 func TestCreateTenant(t *testing.T) {
@@ -70,7 +71,7 @@ func TestCreateTenantDuplicateSlug(t *testing.T) {
 	}
 
 	// Slugs stay taken after the tenant is destroyed.
-	setStatus(t, pool, first.ID, domain.TenantDestroyed)
+	testutil.SetTenantStatus(t, pool, first.ID, domain.TenantDestroyed)
 	_, _, err = s.CreateTenant(ctx, "acme", "Another")
 	assertCode(t, err, domain.CodeTenantAlreadyExists)
 }
@@ -81,7 +82,7 @@ func TestPatchTenant(t *testing.T) {
 	s, pool := newRepo(t)
 
 	created := mustCreate(t, s, "acme")
-	finishTask(t, pool, created.ID, domain.TenantActive) // version 2
+	testutil.FinishTask(t, pool, created.ID, domain.TenantActive) // version 2
 
 	tenant, task, err := s.PatchTenant(ctx, created.ID, "Acme Renamed", 2)
 	if err != nil {
@@ -109,8 +110,8 @@ func TestPatchTenantRejected(t *testing.T) {
 	s, pool := newRepo(t)
 
 	active := mustCreate(t, s, "active")
-	finishTask(t, pool, active.ID, domain.TenantActive) // version 2
-	provisioning := mustCreate(t, s, "provisioning")    // version 1
+	testutil.FinishTask(t, pool, active.ID, domain.TenantActive) // version 2
+	provisioning := mustCreate(t, s, "provisioning")             // version 1
 
 	tests := []struct {
 		name     string
@@ -159,7 +160,7 @@ func TestDeleteTenant(t *testing.T) {
 	for _, from := range []domain.TenantStatus{domain.TenantActive, domain.TenantFailed} {
 		t.Run("from "+string(from), func(t *testing.T) {
 			created := mustCreate(t, s, "from-"+string(from))
-			finishTask(t, pool, created.ID, from) // version 2
+			testutil.FinishTask(t, pool, created.ID, from) // version 2
 
 			tenant, task, err := s.DeleteTenant(ctx, created.ID)
 			if err != nil {
@@ -186,19 +187,19 @@ func TestDeleteTenantRejected(t *testing.T) {
 	provisioning := mustCreate(t, s, "provisioning")
 
 	updating := mustCreate(t, s, "updating")
-	finishTask(t, pool, updating.ID, domain.TenantActive)
+	testutil.FinishTask(t, pool, updating.ID, domain.TenantActive)
 	if _, _, err := s.PatchTenant(ctx, updating.ID, "Renamed", 2); err != nil {
 		t.Fatalf("PatchTenant: %v", err)
 	}
 
 	destroying := mustCreate(t, s, "destroying")
-	finishTask(t, pool, destroying.ID, domain.TenantActive)
+	testutil.FinishTask(t, pool, destroying.ID, domain.TenantActive)
 	if _, _, err := s.DeleteTenant(ctx, destroying.ID); err != nil {
 		t.Fatalf("DeleteTenant: %v", err)
 	}
 
 	destroyed := mustCreate(t, s, "destroyed")
-	setStatus(t, pool, destroyed.ID, domain.TenantDestroyed)
+	testutil.SetTenantStatus(t, pool, destroyed.ID, domain.TenantDestroyed)
 
 	tests := []struct {
 		name     string
@@ -234,7 +235,7 @@ func TestVersionBumpsOnEveryWrite(t *testing.T) {
 	tenant := mustCreate(t, s, "acme")
 	assertVersion(t, s, tenant.ID, 1)
 
-	finishTask(t, pool, tenant.ID, domain.TenantActive)
+	testutil.FinishTask(t, pool, tenant.ID, domain.TenantActive)
 	assertVersion(t, s, tenant.ID, 2)
 
 	if _, _, err := s.PatchTenant(ctx, tenant.ID, "Renamed", 2); err != nil {
@@ -242,7 +243,7 @@ func TestVersionBumpsOnEveryWrite(t *testing.T) {
 	}
 	assertVersion(t, s, tenant.ID, 3)
 
-	finishTask(t, pool, tenant.ID, domain.TenantActive)
+	testutil.FinishTask(t, pool, tenant.ID, domain.TenantActive)
 	assertVersion(t, s, tenant.ID, 4)
 
 	if _, _, err := s.DeleteTenant(ctx, tenant.ID); err != nil {
@@ -375,7 +376,7 @@ func TestListTasks(t *testing.T) {
 	s, pool := newRepo(t)
 
 	a := mustCreate(t, s, "tenant-a")
-	finishTask(t, pool, a.ID, domain.TenantActive)
+	testutil.FinishTask(t, pool, a.ID, domain.TenantActive)
 	_, update, err := s.PatchTenant(ctx, a.ID, "Renamed", 2)
 	if err != nil {
 		t.Fatalf("PatchTenant: %v", err)
@@ -466,33 +467,6 @@ func assertVersion(t *testing.T, s *store.Store, id uuid.UUID, want int) {
 	t.Helper()
 	if got := mustGet(t, s, id).Version; got != want {
 		t.Fatalf("version = %d, want %d", got, want)
-	}
-}
-
-// finishTask stands in for the worker and the update consumer (PLAN.md 6.1):
-// it closes the tenant's open task and moves the tenant to status, bumping
-// the version as every tenant write does.
-func finishTask(t *testing.T, pool *pgxpool.Pool, tenantID uuid.UUID, status domain.TenantStatus) {
-	t.Helper()
-	ctx := context.Background()
-	taskStatus := "done"
-	if status == domain.TenantFailed {
-		taskStatus = "failed"
-	}
-	if _, err := pool.Exec(ctx,
-		`UPDATE tasks SET status = $2, updated_at = now() WHERE tenant_id = $1 AND status IN ('accepted', 'in_progress')`,
-		tenantID, taskStatus); err != nil {
-		t.Fatalf("close open task: %v", err)
-	}
-	setStatus(t, pool, tenantID, status)
-}
-
-func setStatus(t *testing.T, pool *pgxpool.Pool, id uuid.UUID, status domain.TenantStatus) {
-	t.Helper()
-	if _, err := pool.Exec(context.Background(),
-		`UPDATE tenants SET status = $2, version = version + 1, updated_at = now() WHERE id = $1`,
-		id, string(status)); err != nil {
-		t.Fatalf("set tenant status: %v", err)
 	}
 }
 

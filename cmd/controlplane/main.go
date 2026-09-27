@@ -60,7 +60,7 @@ func run(logger *slog.Logger) error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.Deps{Logger: logger, DB: pool}),
+		Handler:           api.NewRouter(api.Deps{Logger: logger, DB: pool, Store: store.New(pool)}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,

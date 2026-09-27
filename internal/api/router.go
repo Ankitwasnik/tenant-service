@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/Ankitwasnik/tenant-service/internal/domain"
+	"github.com/Ankitwasnik/tenant-service/internal/store"
 )
 
 // Pinger checks that the database is reachable. *pgxpool.Pool implements it.
@@ -18,10 +20,26 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
+// Store is what the handlers need from persistence. *store.Store implements it.
+type Store interface {
+	CreateTenant(ctx context.Context, slug, name string) (domain.Tenant, domain.Task, error)
+	PatchTenant(ctx context.Context, id uuid.UUID, name string, expectedVersion int) (domain.Tenant, domain.Task, error)
+	DeleteTenant(ctx context.Context, id uuid.UUID) (domain.Tenant, domain.Task, error)
+	GetTenant(ctx context.Context, id uuid.UUID) (domain.Tenant, error)
+	ListTenants(ctx context.Context, p store.Page) ([]domain.Tenant, *uuid.UUID, error)
+	GetTask(ctx context.Context, id uuid.UUID) (domain.Task, error)
+	ListTasks(ctx context.Context, tenantID *uuid.UUID, p store.Page) ([]domain.Task, *uuid.UUID, error)
+}
+
 // Deps are the router's dependencies.
 type Deps struct {
 	Logger *slog.Logger
 	DB     Pinger
+	Store  Store
+}
+
+type handlers struct {
+	store Store
 }
 
 const healthTimeout = 2 * time.Second
@@ -46,6 +64,16 @@ func NewRouter(d Deps) *gin.Engine {
 	})
 
 	r.GET("/healthz", health(d.DB))
+
+	h := &handlers{store: d.Store}
+	v1 := r.Group("/v1")
+	v1.POST("/tenants", h.createTenant)
+	v1.GET("/tenants", h.listTenants)
+	v1.GET("/tenants/:id", h.getTenant)
+	v1.PATCH("/tenants/:id", h.patchTenant)
+	v1.DELETE("/tenants/:id", h.deleteTenant)
+	v1.GET("/tasks", h.listTasks)
+	v1.GET("/tasks/:id", h.getTask)
 	return r
 }
 

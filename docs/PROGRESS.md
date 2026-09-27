@@ -19,8 +19,8 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | 2.2 | Repository: tenant and task operations    | ✅     | `1daa8f3` | `make check` gates pass; 48 store tests and subtests, 87.4% coverage of `internal/store` (the uncovered lines are database-failure branches). |
 | 2.3 | Transient-error classification            | ✅     | `ca5a5ce` | `make check` passes. 34 unit cases, plus a real terminated backend: pgx returns `PgError` 57P01, which is classified as transient. |
 | **3** | **HTTP API**                            |        |        |       |
-| 3.1 | Server scaffolding and boot               | ✅     | _not committed yet_ | `make check` passes. `make up` → `/healthz` 200. Data survives `make down && make up`. SIGTERM → `shutting down` / `stopped`, exit 0 at once. Pinned: gin v1.12.0. |
-| 3.2 | Tenant and task endpoints                 | ⬜     |        |       |
+| 3.1 | Server scaffolding and boot               | ✅     | `3b07c62` | `make check` passes. `make up` → `/healthz` 200. Data survives `make down && make up`. SIGTERM → `shutting down` / `stopped`, exit 0 at once. Pinned: gin v1.12.0. |
+| 3.2 | Tenant and task endpoints                 | ✅     | _not committed yet_ | `make check` gates pass; 73 API tests and subtests, 95.3% coverage of `internal/api`. Live: a curl create returns 201 + `Location`, with the tenant in `provisioning` (the `curl-demo` tenant is left in the dev DB; its event should go out once the relay lands in 4.2). |
 | 3.3 | Concurrency tests                         | ⬜     |        |       |
 | **4** | **Outbound messaging**                  |        |        |       |
 | 4.1 | Messaging package: topology and envelopes | ⬜     |        |       |
@@ -78,6 +78,16 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **Successful `/healthz` calls aren't logged.** The compose health check polls every 5 s, which would bury the real request logs.
   - **Decode errors name the field:** an unknown field, a wrong JSON type, malformed or trailing JSON, and a body over 64 KiB are all `validation_error`s, with `details` naming the field (or `body`). A too-large body is a 400 rather than a 413, which keeps the code list short.
   - **The compose health check uses `wget -q -O /dev/null`**, which fails on a non-2xx response. DESIGN.md §10 is updated to match.
+- **3.2:**
+  - **PATCH validation happens in the API** before the store is called:
+    - A missing `name` or `version` is "is required".
+    - A `version` below 1 is a 400 "must be a positive integer". Such a version could never match; the store's version-conflict path now only sees values above int32.
+    - Sending `slug` is "cannot be changed" rather than the generic "is not a known field", so the client learns why.
+    - Every problem is reported in one response.
+  - **All bad list parameters are reported at once:** `limit`, `cursor` and `tenant_id` each get their own entry in `details`.
+  - **A malformed path id's message quotes the id** (`"nope" is not a known id`), with the same `*_not_found` code as an unknown one.
+  - **JSON views are separate from the domain types** (`views.go`), so the wire format can't change by accident when a domain struct does. An empty page is `"items": []`, never `null`. `error` is omitted from a task unless it failed.
+  - **`FinishTask` / `SetTenantStatus` moved to `internal/testutil`**, so the store and API tests share one stand-in for the worker.
 
 ## Open issues
 
