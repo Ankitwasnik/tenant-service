@@ -16,8 +16,8 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | 1.2 | Validation and formatting                 | ✅     | `5d40e63` | `make check` passes; `internal/domain` still at 100% statement coverage. |
 | **2** | **Persistence**                         |        |        |       |
 | 2.1 | Schema, migrations, sqlc                  | ✅     | `6c6d690` | `make check` passes, now including `sqlc diff`; a stale query fails it. Integration tests confirmed running, not skipped, and every per-test database is dropped. Pinned: pgx v5.11.0, goose v3.28.0, sqlc 1.31.1. |
-| 2.2 | Repository: tenant and task operations    | ✅     | _not committed yet_ | `make check` gates pass; 48 store tests and subtests, 87.4% coverage of `internal/store` (the uncovered lines are database-failure branches). |
-| 2.3 | Transient-error classification            | ⬜     |        |       |
+| 2.2 | Repository: tenant and task operations    | ✅     | `1daa8f3` | `make check` gates pass; 48 store tests and subtests, 87.4% coverage of `internal/store` (the uncovered lines are database-failure branches). |
+| 2.3 | Transient-error classification            | ✅     | _not committed yet_ | `make check` passes. 34 unit cases, plus a real terminated backend: pgx returns `PgError` 57P01, which is classified as transient. |
 | **3** | **HTTP API**                            |        |        |       |
 | 3.1 | Server scaffolding and boot               | ⬜     |        |       |
 | 3.2 | Tenant and task endpoints                 | ⬜     |        |       |
@@ -66,6 +66,11 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **PATCH and DELETE share one `mutate` helper**, which does the guarded UPDATE, the diagnosis on a miss, and the bounded retry (3 attempts) from the 1.1 design change. The retry is tested with a guard that misses on purpose: the real race window is too narrow to hit reliably.
   - **A PATCH version outside int32** (such as 0 or 2³¹) matches no row by definition. The UPDATE is skipped and the normal diagnosis answers: `tenant_version_conflict`, or `tenant_not_found` for an unknown id.
   - **Test stand-in for the worker:** `finishTask` in the tests closes the open task and moves the tenant on with plain SQL, until the consumer (6.1) exists.
+- **2.3:**
+  - **`40002` is permanent**, although it's in class 40. It means a deferred constraint failed at commit, and retrying gives the same result. DESIGN.md §6 names class 40 as a whole, so this is a refinement.
+  - **Cancelled and timed-out contexts count as transient.** The operation didn't fail on its own merits, and it means a shutdown requeues the in-flight message instead of dead-lettering it (DESIGN.md §6).
+  - **The server's error code is checked first.** A failed connection can wrap a server error, so "starting up" (`57P03`) is retried but a wrong password (`28P01`) is not.
+  - **An integration test beyond the plan** terminates its own backend (`pg_terminate_backend`) to check what a Postgres restart looks like to a query: `57P01`, transient.
 
 ## Open issues
 
