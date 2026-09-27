@@ -1,0 +1,27 @@
+# golangci-lint v2. Runs in a container (`make lint`, `make fmt`); see compose.yaml.
+version: "2"
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - gosec # security scanner (DESIGN.md §1)
+    - revive
+    - errorlint # errors.Is / errors.As instead of == and type switches (pgx, domain errors)
+    - bodyclose
+    - misspell
+    - unconvert
+  exclusions:
+    presets:
+      - comments # don't require doc comments on every exported identifier
+      - std-error-handling # e.g. unchecked Close() on deferred cleanup
+      - common-false-positives
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Ankitwasnik/tenant-service

@@ -7,14 +7,44 @@ COMPOSE := docker compose
 TEST_DB    := controlplane_test
 TEST_VHOST := test
 
-.PHONY: test test-reset test-drop
+GOVULNCHECK_VERSION := v1.8.0
+
+# Tool containers never need postgres or rabbitmq.
+LINT := $(COMPOSE) run --rm --no-deps lint
+GO   := $(COMPOSE) run --rm --no-deps tests
+
+.PHONY: check fmt fmt-check lint vuln test test-reset test-drop
+
+## check: every quality gate, in order; stops at the first failure
+check:
+	@$(MAKE) --no-print-directory fmt-check
+	@$(MAKE) --no-print-directory lint
+	@$(MAKE) --no-print-directory vuln
+	@$(MAKE) --no-print-directory test
+
+## fmt: format all Go code in place (gofumpt + goimports)
+fmt:
+	$(LINT) golangci-lint fmt
+
+## fmt-check: fail if any Go file is not formatted, and show the diff
+fmt-check:
+	$(LINT) golangci-lint fmt --diff
+
+## lint: static analysis, including gosec
+lint:
+	$(LINT) golangci-lint run
+
+## vuln: scan dependencies and the standard library for known vulnerabilities
+vuln:
+	$(GO) go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 ## test: run the full suite with -race against a fresh test database and vhost
-# The suite's exit status is kept, so cleanup runs even when tests fail.
+# -count=1: never reuse cached results, since the suite depends on the database and
+# broker, not just the code. The exit status is kept, so cleanup runs on failure too.
 test:
 	$(COMPOSE) up -d --wait postgres rabbitmq
 	@$(MAKE) --no-print-directory test-reset
-	@$(COMPOSE) run --rm tests go test -race ./...; status=$$?; \
+	@$(COMPOSE) run --rm tests go test -race -count=1 ./...; status=$$?; \
 	$(MAKE) --no-print-directory test-drop; \
 	exit $$status
 

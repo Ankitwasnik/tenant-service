@@ -3,8 +3,8 @@
 # Credentials below are non-secret local-dev defaults; override any of them via
 # environment variables (e.g. POSTGRES_PASSWORD=... docker compose up).
 # The controlplane and worker services are added once those binaries exist.
-# The `tests` service is behind the `test` profile, so `docker compose up` never
-# starts it; `make test` runs it (see the Makefile).
+# The `tests` and `lint` services are behind profiles, so `docker compose up`
+# never starts them; the Makefile runs them.
 
 name: tenant-service
 
@@ -75,8 +75,21 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # Lint and format (`make lint`, `make fmt`, `make fmt-check`). Pinned, so every
+  # machine gets the same rules and formatter output. Shares the Go caches above.
+  lint:
+    image: golangci/golangci-lint:v2.14.0
+    profiles: [tools]
+    working_dir: /src
+    volumes:
+      - .:/src
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+      - golangci-lint-cache:/root/.cache/golangci-lint
+
 volumes:
   postgres-data:
   rabbitmq-data:
   go-mod-cache:
   go-build-cache:
+  golangci-lint-cache:
