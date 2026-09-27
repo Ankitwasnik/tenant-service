@@ -12,8 +12,8 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | 0.1 | Build and test harness                    | ✅     | `1fbe5a3` | `make test` passes cold; cleanup verified on success and on failure; image builds and runs as non-root. `make check` only exists from 0.2, so the gate here was `make test`. |
 | 0.2 | Lint, format, vuln scan                   | ✅     | `825ad59` | `make check` passes. A misformatted file fails `fmt-check`, and lint issues (including gosec) fail `lint`. Pinned: golangci-lint v2.14.0 (built with go1.27.0), govulncheck v1.8.0. |
 | **1** | **Domain**                              |        |        |       |
-| 1.1 | Statuses, transitions, errors             | ✅     | _not committed yet_ | `make check` passes; 70 test cases, 100% statement coverage of `internal/domain`. Adds `github.com/google/uuid` v1.6.0. |
-| 1.2 | Validation and formatting                 | ⬜     |        |       |
+| 1.1 | Statuses, transitions, errors             | ✅     | `3c2965f` | `make check` passes; 70 test cases, 100% statement coverage of `internal/domain`. Adds `github.com/google/uuid` v1.6.0. |
+| 1.2 | Validation and formatting                 | ✅     | _not committed yet_ | `make check` passes; `internal/domain` still at 100% statement coverage. |
 | **2** | **Persistence**                         |        |        |       |
 | 2.1 | Schema, migrations, sqlc                  | ⬜     |        |       |
 | 2.2 | Repository: tenant and task operations    | ⬜     |        |       |
@@ -49,7 +49,11 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
 - **1.1:**
   - **The plan's single `ConflictError(expectedVersion, current)` is split in two.** `PatchConflict` checks the version, then the status. `DeleteConflict` checks only the status, since DELETE takes no version. Both return `nil` when the operation would be allowed against the current row, which only happens if the row changed between the guarded UPDATE and the read; the store (2.2) then retries the UPDATE. This covers a gap in DESIGN.md §5: a DELETE on a `provisioning` tenant whose deploy fails in between would otherwise report `tenant_update_not_allowed` for a tenant that is now deletable.
   - **Validation errors** are built with `FieldErrors` (`Add(field, msg)`, then `Err()`), so 1.2 and the API can collect every field problem before failing.
-  - **Small additions:** `Valid()` on each enum type (for the store's DB → domain mapping and for message validation in 4.1), `TaskStatus.Terminal()`, and `CodeOf(err)` for mapping errors to codes through `%w` wrapping.
+  - **Small additions (1.1):** `Valid()` on each enum type (for the store's DB → domain mapping and for message validation in 4.1), `TaskStatus.Terminal()`, and `CodeOf(err)` for mapping errors to codes through `%w` wrapping.
+- **1.2:**
+  - **`ValidateCreate(slug, name)` added** beyond the plan's list. It checks both fields together and returns one `validation_error` naming every invalid field, so a client doesn't have to fix them one at a time. The create handler (3.2) calls it; PATCH uses `NormalizeName` directly.
+  - **Slug errors are split into two messages:** a length message ("must be 3-28 characters") and a format message. The regex alone already enforces the length, but a separate message is clearer for a slug that's too short or too long.
+  - **Name length is counted in characters (runes), not bytes**, so 200 accented characters are allowed. DESIGN.md §7 says "200 characters", so this matches it.
 
 ## Open issues
 
