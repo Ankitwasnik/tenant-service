@@ -76,6 +76,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     restart: unless-stopped
 
   # Runs the Go test suite, so the host needs no Go toolchain. Debian-based image,

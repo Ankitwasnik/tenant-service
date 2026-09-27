@@ -66,12 +66,13 @@ vuln:
 	$(GO) go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 ## test: run the full suite with -race against a fresh test database and vhost
+# -timeout 5m: a hang fails in minutes, not after go test's default 10.
 # -count=1: never reuse cached results, since the suite depends on the database and
 # broker, not just the code. The exit status is kept, so cleanup runs on failure too.
 test:
 	$(COMPOSE) up -d --wait postgres rabbitmq
 	@$(MAKE) --no-print-directory test-reset
-	@$(COMPOSE) run --rm tests go test -race -count=1 ./...; status=$$?; \
+	@$(COMPOSE) run --rm tests go test -race -count=1 -timeout 5m ./...; status=$$?; \
 	$(MAKE) --no-print-directory test-drop; \
 	exit $$status
 

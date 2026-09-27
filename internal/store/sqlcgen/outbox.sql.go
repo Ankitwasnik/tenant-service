@@ -11,6 +11,50 @@ import (
 	"github.com/google/uuid"
 )
 
+const claimUnpublished = `-- name: ClaimUnpublished :many
+SELECT id, task_id, routing_key, payload
+FROM outbox
+WHERE published_at IS NULL
+ORDER BY id
+LIMIT $1
+FOR UPDATE SKIP LOCKED
+`
+
+type ClaimUnpublishedRow struct {
+	ID         int64
+	TaskID     uuid.UUID
+	RoutingKey string
+	Payload    []byte
+}
+
+// The relay's claim: the oldest unpublished events, locked for this tx.
+// SKIP LOCKED lets several relays (control-plane replicas) run at once: each
+// takes rows no other relay holds, so no event is claimed twice concurrently.
+func (q *Queries) ClaimUnpublished(ctx context.Context, batchSize int32) ([]ClaimUnpublishedRow, error) {
+	rows, err := q.db.Query(ctx, claimUnpublished, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClaimUnpublishedRow
+	for rows.Next() {
+		var i ClaimUnpublishedRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TaskID,
+			&i.RoutingKey,
+			&i.Payload,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertOutbox = `-- name: InsertOutbox :exec
 INSERT INTO outbox (task_id, routing_key, payload)
 VALUES ($1, $2, $3)
@@ -22,9 +66,21 @@ type InsertOutboxParams struct {
 	Payload    []byte
 }
 
-// Written in the same tx as the tenant and task (DESIGN.md §6). The relay's
-// queries are added with the relay (PLAN.md 4.2).
+// Written in the same tx as the tenant and task (DESIGN.md §6).
 func (q *Queries) InsertOutbox(ctx context.Context, arg InsertOutboxParams) error {
 	_, err := q.db.Exec(ctx, insertOutbox, arg.TaskID, arg.RoutingKey, arg.Payload)
+	return err
+}
+
+const markPublished = `-- name: MarkPublished :exec
+UPDATE outbox
+SET published_at = clock_timestamp()
+WHERE id = ANY($1::bigint[])
+`
+
+// clock_timestamp(), not now(): the tx started before the publish, and
+// now() would record that earlier time (DESIGN.md §3).
+func (q *Queries) MarkPublished(ctx context.Context, ids []int64) error {
+	_, err := q.db.Exec(ctx, markPublished, ids)
 	return err
 }

@@ -1,5 +1,6 @@
 // Command controlplane runs the tenant provisioning control plane: the HTTP
-// API, the outbox relay and the task-update consumer (DESIGN.md §2).
+// API, the outbox relay and (from PLAN.md 6.2) the task-update consumer
+// (DESIGN.md §2).
 package main
 
 import (
@@ -13,9 +14,12 @@ import (
 	"syscall"
 	"time"
 
+	amqp "github.com/rabbitmq/amqp091-go"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Ankitwasnik/tenant-service/internal/api"
+	"github.com/Ankitwasnik/tenant-service/internal/messaging"
+	"github.com/Ankitwasnik/tenant-service/internal/outbox"
 	"github.com/Ankitwasnik/tenant-service/internal/store"
 )
 
@@ -57,10 +61,29 @@ func run(logger *slog.Logger) error {
 	}
 	defer pool.Close()
 	logger.Info("database ready")
+	repo := store.New(pool)
+
+	conn, err := messaging.Dial(cfg.AMQPURL)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	// Until the reconnect helper (PLAN.md 7.1), a lost broker connection stops
+	// the process, and compose's restart policy brings it back. Unacked
+	// messages are redelivered and unpublished events wait in the outbox, so
+	// nothing is lost.
+	connClosed := conn.NotifyClose(make(chan *amqp.Error, 1))
+
+	publisher, err := outbox.NewAMQPPublisher(conn, outbox.DefaultConfirmTimeout)
+	if err != nil {
+		return err
+	}
+	logger.Info("broker ready")
+	relay := outbox.NewRelay(repo, publisher, logger, outbox.Config{})
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.Deps{Logger: logger, DB: pool, Store: store.New(pool)}),
+		Handler:           api.NewRouter(api.Deps{Logger: logger, DB: pool, Store: repo}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -75,6 +98,18 @@ func run(logger *slog.Logger) error {
 			return fmt.Errorf("http server: %w", err)
 		}
 		return nil
+	})
+	g.Go(func() error { return relay.Run(gctx) })
+	g.Go(func() error {
+		select {
+		case <-gctx.Done():
+			return nil
+		case amqpErr, ok := <-connClosed:
+			if !ok || amqpErr == nil { // closed without an error: a clean close
+				return errors.New("broker connection closed")
+			}
+			return fmt.Errorf("broker connection lost: %w", amqpErr)
+		}
 	})
 	g.Go(func() error {
 		<-gctx.Done() // a signal, or another goroutine failed

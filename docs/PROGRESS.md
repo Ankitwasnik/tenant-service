@@ -23,8 +23,8 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | 3.2 | Tenant and task endpoints                 | ✅     | `6608b42` | `make check` gates pass; 73 API tests and subtests, 95.3% coverage of `internal/api`. Live: a curl create returns 201 + `Location`, with the tenant in `provisioning` (the `curl-demo` tenant is left in the dev DB; its event should go out once the relay lands in 4.2). |
 | 3.3 | Concurrency tests                         | ✅     | `2b0b980` | `make check` passes. 49–50 of 50 requests in flight at once. Stable over 10 consecutive runs (120 races). With the PATCH guard deliberately broken, the PATCH race test fails. |
 | **4** | **Outbound messaging**                  |        |        |       |
-| 4.1 | Messaging package: topology and envelopes | ✅     | _not committed yet_ | `make check` passes. Routing, dead-lettering and the delivery limit were verified against real RabbitMQ, one vhost per test; stable over 3 runs. Pinned: amqp091-go v1.15.0. |
-| 4.2 | Outbox relay                              | ⬜     |        |       |
+| 4.1 | Messaging package: topology and envelopes | ✅     | `13719b2` | `make check` passes. Routing, dead-lettering and the delivery limit were verified against real RabbitMQ, one vhost per test; stable over 3 runs. Pinned: amqp091-go v1.15.0. |
+| 4.2 | Outbox relay                              | ✅     | _not committed yet_ | `make check` passes; 12 outbox tests, stable over 3 runs. Live: on start the relay published the `curl-demo` event from 3.2, and a new create put a second message in `worker.tasks`. |
 | **5** | **Worker simulator**                    |        |        |       |
 | 5.1 | Worker                                    | ⬜     |        |       |
 | **6** | **Inbound consumer**                    |        |        |       |
@@ -101,6 +101,14 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **Additions:** `NewTaskUpdate` builds an update with its deterministic id and drops `error` unless the status is `failed`. `DecodeTaskUpdate` wraps every failure in `ErrInvalidMessage`, so the consumer can dead-letter it. It also pins the message types (`task.v1`, `task_update.v1`) and `UpdateRoutingKey`.
   - **Unknown JSON fields in an update are ignored**, not rejected, so a newer worker can add fields without its messages being dead-lettered by an older control plane.
   - **The UUIDv5 namespace is pinned in a test.** Changing it would give a re-run of an old task new update ids, and the inbox would stop deduplicating them.
+- **4.2:**
+  - **Bug found and fixed:** `drainReturns` spun forever once the AMQP channel closed. amqp091 closes the returns channel, and a receive on a closed Go channel succeeds at once, every time. In production a broker outage would have pinned a CPU and stopped the relay from backing off. `TestAMQPPublisherClosedChannel` caught it as a hang; the fix checks the receive's `ok` value.
+  - **`make test` now passes `-timeout 5m`.** That hang ran into go test's default 10-minute timeout; a future one fails in minutes.
+  - **The claim-publish-mark transaction lives in the store** (`store.RelayOutbox`, which takes a `PublishFunc`), so all SQL stays in the repository. `internal/outbox` holds the loop, backoff and AMQP publisher. The store marks only ids from the claimed batch, even if a publisher reports others.
+  - **The loop's cadence:** after a full batch the relay goes again at once, since more may be waiting. Otherwise it waits the 200 ms poll interval. After a failure it waits a jittered exponential backoff (100 ms doubling to 10 s, spread over [d/2, d] so replicas don't retry in lockstep).
+  - **Deferred confirms:** the publisher uses amqp091's `PublishWithDeferredConfirmWithContext`. The whole batch goes out first, then all its confirms are awaited under one 5 s timeout. Returned messages are matched to the batch by `message_id` (the task id). The returns buffer (1024) is well above the batch size, because amqp091 delivers returns synchronously and a full buffer would stall the connection.
+  - **A lost broker connection stops the process** until the reconnect helper (7.1): `main` watches `NotifyClose` and returns an error, the errgroup shuts everything down, and compose restarts the container. This is the documented fallback in PLAN.md's cut line.
+  - **Tests beyond the plan:** three relays on one outbox publish each of 60 events exactly once (SKIP LOCKED); `Run` backs off through 3 failures, then publishes and stops cleanly on cancel; ids outside the batch are ignored; closed-channel and 1 ns-timeout cases against real RabbitMQ.
 
 ## Open issues
 
