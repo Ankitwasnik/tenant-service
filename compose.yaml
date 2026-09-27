@@ -1,0 +1,82 @@
+# Local development stack.
+#
+# Credentials below are non-secret local-dev defaults; override any of them via
+# environment variables (e.g. POSTGRES_PASSWORD=... docker compose up).
+# The controlplane and worker services are added once those binaries exist.
+# The `tests` service is behind the `test` profile, so `docker compose up` never
+# starts it; `make test` runs it (see the Makefile).
+
+name: tenant-service
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-controlplane}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-controlplane}
+      POSTGRES_DB: ${POSTGRES_DB:-controlplane}
+    # No host port: everything that talks to Postgres runs on the compose network,
+    # and not publishing 5432 avoids clashing with a Postgres already on the host.
+    # Ad-hoc access: docker compose exec postgres psql -U controlplane
+    volumes:
+      # postgres:18+ keeps data under /var/lib/postgresql/<major>/docker,
+      # so the volume is mounted one level up from the pre-18 location.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.3.6-management-alpine
+    # RabbitMQ names its node (and its data directory) after the hostname;
+    # a fixed hostname keeps messages and queues across container re-creation.
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-controlplane}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-controlplane}
+    # Only the management UI / HTTP API is published (used by scripts/publish-update.sh);
+    # AMQP (5672) stays on the compose network. Bound to localhost only.
+    ports:
+      - "127.0.0.1:${RABBITMQ_MGMT_HOST_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      # `ping` passes before the AMQP listener is up; port connectivity does not.
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_port_connectivity"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 15s
+    restart: unless-stopped
+
+  # Runs the Go test suite, so the host needs no Go toolchain. Debian-based image,
+  # not -alpine: -race needs cgo and a C toolchain.
+  # Isolation from the dev stack: its own database and its own RabbitMQ vhost,
+  # both created fresh and dropped by `make test` (DESIGN.md §10). The names here
+  # must match TEST_DB / TEST_VHOST in the Makefile.
+  tests:
+    image: golang:1.27
+    profiles: [test]
+    working_dir: /src
+    volumes:
+      - .:/src
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    environment:
+      TEST_DATABASE_URL: postgres://${POSTGRES_USER:-controlplane}:${POSTGRES_PASSWORD:-controlplane}@postgres:5432/controlplane_test?sslmode=disable
+      TEST_AMQP_URL: amqp://${RABBITMQ_USER:-controlplane}:${RABBITMQ_PASSWORD:-controlplane}@rabbitmq:5672/test
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  go-mod-cache:
+  go-build-cache:
