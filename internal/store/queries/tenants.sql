@@ -28,3 +28,11 @@ UPDATE tenants
    SET status = 'destroying', version = version + 1, updated_at = now()
  WHERE id = $1 AND status IN ('active', 'failed')
 RETURNING *;
+
+-- A terminal task outcome moves its tenant (DESIGN.md §4), guarded on the
+-- status the tenant must be in. No row means that invariant is broken.
+-- name: ApplyTenantOutcome :one
+UPDATE tenants
+   SET status = sqlc.arg(next_status), version = version + 1, updated_at = now()
+ WHERE id = sqlc.arg(id) AND status = sqlc.arg(expected_status)
+RETURNING *;

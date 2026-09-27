@@ -99,3 +99,54 @@ func (q *Queries) ListTasks(ctx context.Context, arg ListTasksParams) ([]Task, e
 	}
 	return items, nil
 }
+
+const lockTask = `-- name: LockTask :one
+SELECT id, tenant_id, type, status, error, created_at, updated_at FROM tasks
+WHERE id = $1
+FOR NO KEY UPDATE
+`
+
+// Serializes updates to one task (DESIGN.md §5). NO KEY UPDATE, not UPDATE:
+// the key never changes, so foreign-key checks against the row aren't blocked.
+func (q *Queries) LockTask(ctx context.Context, id uuid.UUID) (Task, error) {
+	row := q.db.QueryRow(ctx, lockTask, id)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Type,
+		&i.Status,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateTaskStatus = `-- name: UpdateTaskStatus :one
+UPDATE tasks
+   SET status = $2, error = $3, updated_at = now()
+ WHERE id = $1
+RETURNING id, tenant_id, type, status, error, created_at, updated_at
+`
+
+type UpdateTaskStatusParams struct {
+	ID     uuid.UUID
+	Status string
+	Error  *string
+}
+
+func (q *Queries) UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) (Task, error) {
+	row := q.db.QueryRow(ctx, updateTaskStatus, arg.ID, arg.Status, arg.Error)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Type,
+		&i.Status,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

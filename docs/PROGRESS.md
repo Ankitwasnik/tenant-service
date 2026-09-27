@@ -26,9 +26,9 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | 4.1 | Messaging package: topology and envelopes | ✅     | `13719b2` | `make check` passes. Routing, dead-lettering and the delivery limit were verified against real RabbitMQ, one vhost per test; stable over 3 runs. Pinned: amqp091-go v1.15.0. |
 | 4.2 | Outbox relay                              | ✅     | `fd93574` | `make check` passes; 12 outbox tests, stable over 3 runs. Live: on start the relay published the `curl-demo` event from 3.2, and a new create put a second message in `worker.tasks`. |
 | **5** | **Worker simulator**                    |        |        |       |
-| 5.1 | Worker                                    | ✅     | _not committed yet_ | `make check` passes. Live: the worker drained the 2 queued tasks, a create gave `in_progress` + `done`, and `make worker ARGS="--fail-rate=1"` replaced it (one container) so a create ended `failed`. 8 updates now wait in `controlplane.task-updates` for the consumer (6.2). |
+| 5.1 | Worker                                    | ✅     | `3399448` | `make check` passes. Live: the worker drained the 2 queued tasks, a create gave `in_progress` + `done`, and `make worker ARGS="--fail-rate=1"` replaced it (one container) so a create ended `failed`. 8 updates now wait in `controlplane.task-updates` for the consumer (6.2). |
 | **6** | **Inbound consumer**                    |        |        |       |
-| 6.1 | Apply-update transaction                  | ⬜     |        |       |
+| 6.1 | Apply-update transaction                  | ✅     | _not committed yet_ | `make check` passes; 17 update tests and subtests, stable over 5 runs. With the task-row lock removed, the concurrency test fails 20/20 (task regressed to `in_progress`). |
 | 6.2 | AMQP consumer loop                        | ⬜     |        |       |
 | 6.3 | End-to-end test                           | ⬜     |        |       |
 | **7** | **Resilience, tooling, docs**           |        |        |       |
@@ -119,6 +119,17 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **The flag and env precedence:** a `WORKER_*` env var sets the default and the flag overrides it. Unknown flags (such as the cut `--seed`) and stray arguments are errors.
   - **The fail-rate rule is `random() < rate`** with `random` in [0, 1), so 0 never fails and 1 always does. The tests inject the random value to pin both ends and the threshold.
   - **Each worker goroutine has its own publisher channel**, since a `ConfirmPublisher` isn't safe for concurrent use.
+- **6.1:**
+  - **Tests beyond the plan:**
+    - The full lifecycle, where `in_progress` doesn't touch the tenant or its version.
+    - All five other (task type, outcome) pairs: deploy failed, update done or failed, destroy done or failed.
+    - A failed update with no error message.
+    - A re-run's opposite outcome (`failed` after `done`, a different update id) is stale, so a redelivered task can't flip its result.
+    - Both permanent errors are checked not to be classified as transient, so the consumer (6.2) dead-letters them.
+  - **Mutation check:** with `FOR NO KEY UPDATE` removed from `LockTask`, `in_progress` and `done` racing leaves the task back at `in_progress` after the tenant was already made active. That's the regression the lock prevents, and the test failed 20 of 20 runs.
+  - **My mistake during that check, caught by the gates:** I restored the generated file with `git checkout`. The committed version predates this subtask, so that also removed the new `LockTask` and `UpdateTaskStatus` code, and `make sqlc-check` failed on it. Regenerating fixed it. For generated files, restore by running `make generate`, not `git checkout`.
+  - **Both permanent errors roll back the inbox row too**, so a message replayed from the DLQ after a fix is processed afresh rather than skipped as a duplicate.
+  - **`error` is stored only for a `failed` update that carries one;** otherwise it stays NULL.
 
 ## Open issues
 

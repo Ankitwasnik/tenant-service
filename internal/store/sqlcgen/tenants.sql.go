@@ -11,6 +11,36 @@ import (
 	"github.com/google/uuid"
 )
 
+const applyTenantOutcome = `-- name: ApplyTenantOutcome :one
+UPDATE tenants
+   SET status = $1, version = version + 1, updated_at = now()
+ WHERE id = $2 AND status = $3
+RETURNING id, slug, name, status, version, created_at, updated_at
+`
+
+type ApplyTenantOutcomeParams struct {
+	NextStatus     string
+	ID             uuid.UUID
+	ExpectedStatus string
+}
+
+// A terminal task outcome moves its tenant (DESIGN.md §4), guarded on the
+// status the tenant must be in. No row means that invariant is broken.
+func (q *Queries) ApplyTenantOutcome(ctx context.Context, arg ApplyTenantOutcomeParams) (Tenant, error) {
+	row := q.db.QueryRow(ctx, applyTenantOutcome, arg.NextStatus, arg.ID, arg.ExpectedStatus)
+	var i Tenant
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.Name,
+		&i.Status,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getTenant = `-- name: GetTenant :one
 SELECT id, slug, name, status, version, created_at, updated_at FROM tenants
 WHERE id = $1
