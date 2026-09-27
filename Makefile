@@ -12,12 +12,15 @@ GOVULNCHECK_VERSION := v1.8.0
 # Tool containers never need postgres or rabbitmq.
 LINT := $(COMPOSE) run --rm --no-deps lint
 GO   := $(COMPOSE) run --rm --no-deps tests
+# sqlc runs as the host user, so generated files aren't owned by root on Linux.
+SQLC := $(COMPOSE) run --rm --no-deps --user "$(shell id -u):$(shell id -g)" sqlc
 
-.PHONY: check fmt fmt-check lint vuln test test-reset test-drop
+.PHONY: check fmt fmt-check lint vuln generate sqlc-check test test-reset test-drop
 
 ## check: every quality gate, in order; stops at the first failure
 check:
 	@$(MAKE) --no-print-directory fmt-check
+	@$(MAKE) --no-print-directory sqlc-check
 	@$(MAKE) --no-print-directory lint
 	@$(MAKE) --no-print-directory vuln
 	@$(MAKE) --no-print-directory test
@@ -33,6 +36,14 @@ fmt-check:
 ## lint: static analysis, including gosec
 lint:
 	$(LINT) golangci-lint run
+
+## generate: regenerate the sqlc code in internal/store/sqlcgen (committed)
+generate:
+	$(SQLC) generate
+
+## sqlc-check: fail if the committed sqlc code doesn't match the SQL
+sqlc-check:
+	$(SQLC) diff
 
 ## vuln: scan dependencies and the standard library for known vulnerabilities
 vuln:

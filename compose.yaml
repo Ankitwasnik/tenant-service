@@ -87,6 +87,14 @@ services:
       - go-build-cache:/root/.cache/go-build
       - golangci-lint-cache:/root/.cache/golangci-lint
 
+  # sqlc code generation (`make generate`) and its staleness check (`make sqlc-check`).
+  sqlc:
+    image: sqlc/sqlc:1.31.1
+    profiles: [tools]
+    working_dir: /src
+    volumes:
+      - .:/src
+
 volumes:
   postgres-data:
   rabbitmq-data:

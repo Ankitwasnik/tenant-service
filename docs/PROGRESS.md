@@ -13,9 +13,9 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | 0.2 | Lint, format, vuln scan                   | ✅     | `825ad59` | `make check` passes. A misformatted file fails `fmt-check`, and lint issues (including gosec) fail `lint`. Pinned: golangci-lint v2.14.0 (built with go1.27.0), govulncheck v1.8.0. |
 | **1** | **Domain**                              |        |        |       |
 | 1.1 | Statuses, transitions, errors             | ✅     | `3c2965f` | `make check` passes; 70 test cases, 100% statement coverage of `internal/domain`. Adds `github.com/google/uuid` v1.6.0. |
-| 1.2 | Validation and formatting                 | ✅     | _not committed yet_ | `make check` passes; `internal/domain` still at 100% statement coverage. |
+| 1.2 | Validation and formatting                 | ✅     | `5d40e63` | `make check` passes; `internal/domain` still at 100% statement coverage. |
 | **2** | **Persistence**                         |        |        |       |
-| 2.1 | Schema, migrations, sqlc                  | ⬜     |        |       |
+| 2.1 | Schema, migrations, sqlc                  | ✅     | _not committed yet_ | `make check` passes, now including `sqlc diff`; a stale query fails it. Integration tests confirmed running, not skipped, and every per-test database is dropped. Pinned: pgx v5.11.0, goose v3.28.0, sqlc 1.31.1. |
 | 2.2 | Repository: tenant and task operations    | ⬜     |        |       |
 | 2.3 | Transient-error classification            | ⬜     |        |       |
 | **3** | **HTTP API**                            |        |        |       |
@@ -54,6 +54,12 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **`ValidateCreate(slug, name)` added** beyond the plan's list. It checks both fields together and returns one `validation_error` naming every invalid field, so a client doesn't have to fix them one at a time. The create handler (3.2) calls it; PATCH uses `NormalizeName` directly.
   - **Slug errors are split into two messages:** a length message ("must be 3-28 characters") and a format message. The regex alone already enforces the length, but a separate message is clearer for a slug that's too short or too long.
   - **Name length is counted in characters (runes), not bytes**, so 200 accented characters are allowed. DESIGN.md §7 says "200 characters", so this matches it.
+- **2.1:**
+  - **Each integration test gets its own database.** `internal/testutil.NewDatabase` creates an empty database on the test server and drops it afterwards, so tests can run in parallel with a clean schema. `controlplane_test` (from `make test`) is only the admin connection. DESIGN.md §10 is updated.
+  - **Integration tests fail rather than skip** when `TEST_DATABASE_URL` is missing, so a misconfigured `make test` can't pass silently. `go test -short ./...` on the host skips them and runs only the unit tests.
+  - **No `inbox.sql` yet.** Its only queries belong to the consumer (6.1). sqlc needs no empty file, and the plan's rule is to add queries with the code that uses them.
+  - **Extra schema tests** beyond "migrations apply, and re-running is a no-op": UUIDv7 ids, new-tenant defaults, millisecond timestamps, and the unique-slug, one-open-task and non-empty-name constraints, which the repository (2.2) relies on.
+  - **sqlc runs as the host user** (`--user $(id -u):$(id -g)`), so on Linux the generated files aren't owned by root. The staleness check is its own target, `make sqlc-check`, and runs in `make check` after the format check.
 
 ## Open issues
 
