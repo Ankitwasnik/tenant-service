@@ -64,24 +64,26 @@ func run(logger *slog.Logger) error {
 	logger.Info("database ready")
 	repo := store.New(pool)
 
-	conn, err := messaging.Dial(cfg.AMQPURL)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	// Until the reconnect helper (PLAN.md 7.1), a lost broker connection stops
-	// the process, and compose's restart policy brings it back. Unacked
-	// messages are redelivered and unpublished events wait in the outbox, so
-	// nothing is lost.
-	connClosed := conn.NotifyClose(make(chan *amqp.Error, 1))
-
-	publisher, err := outbox.NewAMQPPublisher(conn, outbox.DefaultConfirmTimeout)
-	if err != nil {
-		return err
-	}
-	logger.Info("broker ready")
-	relay := outbox.NewRelay(repo, publisher, logger, outbox.Config{})
 	updates := consumer.New(repo, logger, consumer.Config{})
+
+	// Everything that needs the broker runs in one session per connection:
+	// messaging.Run redials with backoff when the connection is lost, and
+	// starts a fresh relay and consumer on the new one. The HTTP API is
+	// outside it, so it keeps accepting writes while the broker is down; their
+	// events wait in the outbox (DESIGN.md §6).
+	brokerSession := func(ctx context.Context, conn *amqp.Connection) error {
+		publisher, err := outbox.NewAMQPPublisher(conn, outbox.DefaultConfirmTimeout)
+		if err != nil {
+			return err
+		}
+		defer publisher.Close()
+		relay := outbox.NewRelay(repo, publisher, logger, outbox.Config{})
+
+		sg, sctx := errgroup.WithContext(ctx)
+		sg.Go(func() error { return relay.Run(sctx) })
+		sg.Go(func() error { return updates.Run(sctx, conn) })
+		return sg.Wait()
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -101,18 +103,8 @@ func run(logger *slog.Logger) error {
 		}
 		return nil
 	})
-	g.Go(func() error { return relay.Run(gctx) })
-	g.Go(func() error { return updates.Run(gctx, conn) })
 	g.Go(func() error {
-		select {
-		case <-gctx.Done():
-			return nil
-		case amqpErr, ok := <-connClosed:
-			if !ok || amqpErr == nil { // closed without an error: a clean close
-				return errors.New("broker connection closed")
-			}
-			return fmt.Errorf("broker connection lost: %w", amqpErr)
-		}
+		return messaging.Run(gctx, messaging.ReconnectConfig{URL: cfg.AMQPURL, Logger: logger}, brokerSession)
 	})
 	g.Go(func() error {
 		<-gctx.Done() // a signal, or another goroutine failed

@@ -8,14 +8,12 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	amqp "github.com/rabbitmq/amqp091-go"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/Ankitwasnik/tenant-service/internal/messaging"
 	"github.com/Ankitwasnik/tenant-service/internal/worker"
@@ -43,28 +41,10 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	conn, err := messaging.Dial(amqpURL)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	// As in the control plane: until the reconnect helper (PLAN.md 7.1), a
-	// lost connection stops the process and compose restarts it. Unacked
-	// tasks are redelivered.
-	connClosed := conn.NotifyClose(make(chan *amqp.Error, 1))
-
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return worker.Run(gctx, conn, cfg, logger) })
-	g.Go(func() error {
-		select {
-		case <-gctx.Done():
-			return nil
-		case amqpErr, ok := <-connClosed:
-			if !ok || amqpErr == nil {
-				return errors.New("broker connection closed")
-			}
-			return fmt.Errorf("broker connection lost: %w", amqpErr)
-		}
-	})
-	return g.Wait()
+	// On a lost connection, messaging.Run redials with backoff and starts the
+	// worker again on the new one. Unacked tasks are redelivered by RabbitMQ.
+	return messaging.Run(ctx, messaging.ReconnectConfig{URL: amqpURL, Logger: logger},
+		func(ctx context.Context, conn *amqp.Connection) error {
+			return worker.Run(ctx, conn, cfg, logger)
+		})
 }

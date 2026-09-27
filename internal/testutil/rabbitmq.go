@@ -93,6 +93,34 @@ func (m Management) Queue(t *testing.T, name string) QueueInfo {
 	return q
 }
 
+// CloseConnections force-closes every client connection to the vhost from
+// the broker's side, as a broker restart or a network cut would look to the
+// clients. It waits (up to 15s) for at least one connection to show up in the
+// management API, which lists new connections with a short delay, and returns
+// how many it closed.
+func (m Management) CloseConnections(t *testing.T) int {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		var conns []struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(m.do(t, http.MethodGet, "/api/vhosts/"+url.PathEscape(m.Vhost)+"/connections", nil), &conns); err != nil {
+			t.Fatalf("decode connections: %v", err)
+		}
+		if len(conns) > 0 {
+			for _, c := range conns {
+				m.do(t, http.MethodDelete, "/api/connections/"+url.PathEscape(c.Name), nil)
+			}
+			return len(conns)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no connections to the vhost appeared in the management API")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func (m Management) do(t *testing.T, method, path string, body any) []byte {
 	t.Helper()
 	var r io.Reader

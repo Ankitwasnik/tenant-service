@@ -29,10 +29,10 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | 5.1 | Worker                                    | ✅     | `3399448` | `make check` passes. Live: the worker drained the 2 queued tasks, a create gave `in_progress` + `done`, and `make worker ARGS="--fail-rate=1"` replaced it (one container) so a create ended `failed`. 8 updates now wait in `controlplane.task-updates` for the consumer (6.2). |
 | **6** | **Inbound consumer**                    |        |        |       |
 | 6.1 | Apply-update transaction                  | ✅     | `0a53817` | `make check` passes; 17 update tests and subtests, stable over 5 runs. With the task-row lock removed, the concurrency test fails 20/20 (task regressed to `in_progress`). |
-| 6.2 | AMQP consumer loop                        | ✅     | _not committed yet_ | `make check` passes; 10 consumer tests. Live: the 8 queued updates were applied (one `in_progress` correctly stale, arriving after its `done`). A fresh create reached `active` in about 3 s via the API, and DELETE on the failed tenant reached `destroyed`. |
-| 6.3 | End-to-end test                           | ✅     | _not committed yet_ | `make check` passes; 3 end-to-end tests, stable over 5 runs (about 0.3 s each). |
+| 6.2 | AMQP consumer loop                        | ✅     | `85645c6` (with 6.3) | `make check` passes; 10 consumer tests. Live: the 8 queued updates were applied (one `in_progress` correctly stale, arriving after its `done`). A fresh create reached `active` in about 3 s via the API, and DELETE on the failed tenant reached `destroyed`. |
+| 6.3 | End-to-end test                           | ✅     | `85645c6` (with 6.2) | `make check` passes; 3 end-to-end tests, stable over 5 runs (about 0.3 s each). |
 | **7** | **Resilience, tooling, docs**           |        |        |       |
-| 7.1 | Broker reconnect helper                   | ⬜     |        |       |
+| 7.1 | Broker reconnect helper                   | ✅     | _not committed yet_ | `make check` passes; 5 reconnect tests. Live: RabbitMQ stopped, a create during the outage was accepted (event held in the outbox), and after the broker came back the tenant went `active` in about 8 s. `docker compose restart rabbitmq` then a create: `active` in about 5 s. The control plane and worker never restarted (0 restarts, same start time). |
 | 7.2 | publish-update script                     | ⬜     |        |       |
 | 7.3 | README and a cold-run check               | ⬜     |        |       |
 
@@ -154,7 +154,14 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
     - A PATCH on a failed tenant is refused.
     - A destroyed tenant's slug stays taken.
     - 20 tenants created at once all reach `active`, which exercises relay batching, the worker's parallelism and interleaved consumer goroutines together.
-  - **A new package, `internal/e2e`**, with only a test file. It imports the real components and wires them as the two `main`s do: API, relay and consumer on one connection, and the worker on its own, restartable with a new config.
+  - **A new package, `internal/e2e`**, with only a test file.
+- **7.1:**
+  - **`messaging.Run` hands the session the connection, not a channel** as the plan's `fn(ch)` said. Each component opens its own channels: the relay's publisher, the consumer, and one publisher per worker goroutine.
+  - **The session gets a context that is cancelled the moment `NotifyClose` fires**, so everything on the connection stops together before the redial. A session that returns on its own (for example, its channel was closed while the connection stayed up) is also restarted on a fresh connection.
+  - **In the control plane, the relay and consumer form one session** (an errgroup per connection), and the HTTP API runs outside it. The API keeps accepting writes during an outage, and their events wait in the outbox: verified live.
+  - **Startup no longer needs the broker.** A failed first dial is retried like a lost connection. The backoff is 500 ms doubling to 15 s, jittered, and resets once a connection has stayed up 30 s.
+  - **The stop-on-connection-loss fallback from 4.2 and 5.1 is gone** from both `main`s, along with their `NotifyClose` watchers.
+  - **Tests: real connections instead of a fake dialer**, except where a fake is the point. A fake `amqp.Connection` can't exercise `NotifyClose`. So the reconnect cases use real RabbitMQ: a broker-side force-close through the management API (`testutil.Management.CloseConnections`), a client-side close, and a session that fails. The injectable `Dial` covers failed dials with growing backoff (the lower bounds double: at least 20/40/80 ms) and cancel during a 1-hour backoff. It imports the real components and wires them as the two `main`s do: API, relay and consumer on one connection, and the worker on its own, restartable with a new config.
 
 ## Open issues
 
