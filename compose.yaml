@@ -94,6 +94,8 @@ services:
     environment:
       TEST_DATABASE_URL: postgres://${POSTGRES_USER:-controlplane}:${POSTGRES_PASSWORD:-controlplane}@postgres:5432/controlplane_test?sslmode=disable
       TEST_AMQP_URL: amqp://${RABBITMQ_USER:-controlplane}:${RABBITMQ_PASSWORD:-controlplane}@rabbitmq:5672/test
+      # Management API: testutil.NewVhost creates a vhost per test through it.
+      TEST_RABBITMQ_API_URL: http://rabbitmq:15672
     depends_on:
       postgres:
         condition: service_healthy

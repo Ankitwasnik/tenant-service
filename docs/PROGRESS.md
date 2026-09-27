@@ -21,9 +21,9 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | **3** | **HTTP API**                            |        |        |       |
 | 3.1 | Server scaffolding and boot               | ✅     | `3b07c62` | `make check` passes. `make up` → `/healthz` 200. Data survives `make down && make up`. SIGTERM → `shutting down` / `stopped`, exit 0 at once. Pinned: gin v1.12.0. |
 | 3.2 | Tenant and task endpoints                 | ✅     | `6608b42` | `make check` gates pass; 73 API tests and subtests, 95.3% coverage of `internal/api`. Live: a curl create returns 201 + `Location`, with the tenant in `provisioning` (the `curl-demo` tenant is left in the dev DB; its event should go out once the relay lands in 4.2). |
-| 3.3 | Concurrency tests                         | ✅     | _not committed yet_ | `make check` passes. 49–50 of 50 requests in flight at once. Stable over 10 consecutive runs (120 races). With the PATCH guard deliberately broken, the PATCH race test fails. |
+| 3.3 | Concurrency tests                         | ✅     | `2b0b980` | `make check` passes. 49–50 of 50 requests in flight at once. Stable over 10 consecutive runs (120 races). With the PATCH guard deliberately broken, the PATCH race test fails. |
 | **4** | **Outbound messaging**                  |        |        |       |
-| 4.1 | Messaging package: topology and envelopes | ⬜     |        |       |
+| 4.1 | Messaging package: topology and envelopes | ✅     | _not committed yet_ | `make check` passes. Routing, dead-lettering and the delivery limit were verified against real RabbitMQ, one vhost per test; stable over 3 runs. Pinned: amqp091-go v1.15.0. |
 | 4.2 | Outbox relay                              | ⬜     |        |       |
 | **5** | **Worker simulator**                    |        |        |       |
 | 5.1 | Worker                                    | ⬜     |        |       |
@@ -94,6 +94,13 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **Proof of overlap:** a wrapper counts requests inside the handler at once, and the test fails if the peak is below 2. In practice it's 49–50 of 50.
   - **The pool is sized for contention:** `pool_max_conns=25`, so most racing requests hold a database connection at once and the race happens in Postgres, not in the Go pool's queue. The race tests aren't `t.Parallel`, which keeps the total connections well under Postgres's limit of 100.
   - **Mutation check:** with the PATCH guard's `status` and `version` conditions removed from the generated SQL, the PATCH race gives 1 × 202 and 49 × 500 and the test fails. It also showed the safety net working: the `tasks_one_open_per_tenant` index rejected the 49 extra transactions. The generated file was restored from git afterwards.
+- **4.1:**
+  - **Finding: in RabbitMQ 4.3, a `nack` with requeue doesn't count toward `x-delivery-limit`.** A message requeued 30 times was never dead-lettered. A crash (the channel closes with the message unacked) does count, and after 1 + 10 deliveries the message goes to the DLQ with reason `delivery_limit`. DESIGN.md §6 had this backwards ("a shutdown requeue does count") and is corrected. Two tests now pin the behavior: `TestDeliveryLimitStopsCrashLoop` and `TestRequeueByNackIsNotCounted`. Consequence: the consumer (6.2) must never retry by requeueing, which the design already avoids.
+  - **Each RabbitMQ test gets its own vhost.** `testutil.NewVhost` creates it through the management API and deletes it afterwards, the analogue of `NewDatabase`. Without this, tests in different packages (4.2, 6.2) would consume each other's messages from the same queue names. The compose `tests` service gains `TEST_RABBITMQ_API_URL`. `testutil.Management` also reads a queue's type and arguments, which AMQP itself doesn't expose.
+  - **More than "declaring twice is idempotent":** the tests also check that the queues are durable quorum queues with the right arguments, that a conflicting declaration gets `PRECONDITION_FAILED`, that each exchange routes only to its own queue, and that a rejected message reaches its DLQ.
+  - **Additions:** `NewTaskUpdate` builds an update with its deterministic id and drops `error` unless the status is `failed`. `DecodeTaskUpdate` wraps every failure in `ErrInvalidMessage`, so the consumer can dead-letter it. It also pins the message types (`task.v1`, `task_update.v1`) and `UpdateRoutingKey`.
+  - **Unknown JSON fields in an update are ignored**, not rejected, so a newer worker can add fields without its messages being dead-lettered by an older control plane.
+  - **The UUIDv5 namespace is pinned in a test.** Changing it would give a re-run of an old task new update ids, and the inbox would stop deduplicating them.
 
 ## Open issues
 
