@@ -15,8 +15,8 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | 1.1 | Statuses, transitions, errors             | ✅     | `3c2965f` | `make check` passes; 70 test cases, 100% statement coverage of `internal/domain`. Adds `github.com/google/uuid` v1.6.0. |
 | 1.2 | Validation and formatting                 | ✅     | `5d40e63` | `make check` passes; `internal/domain` still at 100% statement coverage. |
 | **2** | **Persistence**                         |        |        |       |
-| 2.1 | Schema, migrations, sqlc                  | ✅     | _not committed yet_ | `make check` passes, now including `sqlc diff`; a stale query fails it. Integration tests confirmed running, not skipped, and every per-test database is dropped. Pinned: pgx v5.11.0, goose v3.28.0, sqlc 1.31.1. |
-| 2.2 | Repository: tenant and task operations    | ⬜     |        |       |
+| 2.1 | Schema, migrations, sqlc                  | ✅     | `6c6d690` | `make check` passes, now including `sqlc diff`; a stale query fails it. Integration tests confirmed running, not skipped, and every per-test database is dropped. Pinned: pgx v5.11.0, goose v3.28.0, sqlc 1.31.1. |
+| 2.2 | Repository: tenant and task operations    | ✅     | _not committed yet_ | `make check` gates pass; 48 store tests and subtests, 87.4% coverage of `internal/store` (the uncovered lines are database-failure branches). |
 | 2.3 | Transient-error classification            | ⬜     |        |       |
 | **3** | **HTTP API**                            |        |        |       |
 | 3.1 | Server scaffolding and boot               | ⬜     |        |       |
@@ -60,6 +60,12 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **No `inbox.sql` yet.** Its only queries belong to the consumer (6.1). sqlc needs no empty file, and the plan's rule is to add queries with the code that uses them.
   - **Extra schema tests** beyond "migrations apply, and re-running is a no-op": UUIDv7 ids, new-tenant defaults, millisecond timestamps, and the unique-slug, one-open-task and non-empty-name constraints, which the repository (2.2) relies on.
   - **sqlc runs as the host user** (`--user $(id -u):$(id -g)`), so on Linux the generated files aren't owned by root. The staleness check is its own target, `make sqlc-check`, and runs in `make check` after the format check.
+- **2.2:**
+  - **`messaging.TaskEvent` added now instead of in 4.1.** The store has to write the event JSON into the outbox, so the envelope type and `TaskRoutingKey` live where 4.1 expects them, rather than ad-hoc JSON that moves later. 4.1 adds the update envelope, topology and `UpdateID`.
+  - **List methods return the next-page cursor.** They fetch `limit + 1` rows to know whether another page exists, with no count query. The API (3.2) only encodes the result. The store rejects limits outside 1-1000; the API applies its own default of 50 and maximum of 200.
+  - **PATCH and DELETE share one `mutate` helper**, which does the guarded UPDATE, the diagnosis on a miss, and the bounded retry (3 attempts) from the 1.1 design change. The retry is tested with a guard that misses on purpose: the real race window is too narrow to hit reliably.
+  - **A PATCH version outside int32** (such as 0 or 2³¹) matches no row by definition. The UPDATE is skipped and the normal diagnosis answers: `tenant_version_conflict`, or `tenant_not_found` for an unknown id.
+  - **Test stand-in for the worker:** `finishTask` in the tests closes the open task and moves the tenant on with plain SQL, until the consumer (6.1) exists.
 
 ## Open issues
 
