@@ -15,7 +15,23 @@ GO   := $(COMPOSE) run --rm --no-deps tests
 # sqlc runs as the host user, so generated files aren't owned by root on Linux.
 SQLC := $(COMPOSE) run --rm --no-deps --user "$(shell id -u):$(shell id -g)" sqlc
 
-.PHONY: check fmt fmt-check lint vuln generate sqlc-check test test-reset test-drop
+.PHONY: up down clean logs check fmt fmt-check lint vuln generate sqlc-check test test-reset test-drop
+
+## up: build and start the whole stack, and wait until every service is healthy
+up:
+	$(COMPOSE) up --build -d --wait
+
+## down: stop and remove the containers; volumes (and so tenants) are kept
+down:
+	$(COMPOSE) down
+
+## clean: like down, and also remove the volumes, for a fresh start
+clean:
+	$(COMPOSE) down --volumes
+
+## logs: follow the logs of every service
+logs:
+	$(COMPOSE) logs -f
 
 ## check: every quality gate, in order; stops at the first failure
 check:

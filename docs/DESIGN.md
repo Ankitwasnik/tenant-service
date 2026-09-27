@@ -324,7 +324,7 @@ Base path `/v1` (a gin `RouterGroup`). JSON only. Unknown fields in request bodi
 { "error": { "code": "tenant_version_conflict", "message": "expected version 3, current is 4", "details": { "current_version": 4 } } }
 ```
 
-Beyond the contract codes there are only `validation_error` (400, with per-field `details`), `method_not_allowed` (405), `not_found` (404, unknown route), and `internal_error` (500, no internals leaked). A panic-recovery middleware makes sure a stack trace never reaches the client.
+Beyond the contract codes there are only `validation_error` (400, with per-field `details`), `method_not_allowed` (405), `not_found` (404, unknown route), `internal_error` (500, no internals leaked), and `service_unavailable` (503, only from `/healthz` when the database is unreachable). A panic-recovery middleware makes sure a stack trace never reaches the client.
 
 ## 8. Worker simulator
 
@@ -385,7 +385,7 @@ sqlc.yaml, Makefile, .golangci.yml, README.md
 
 `make worker` must recreate the one `worker` service, never `docker compose run` a second one. A second worker would compete for `worker.tasks`, so `--fail-rate=1` would only fail roughly half the tasks and the negative scenarios wouldn't reproduce.
 
-**Health checks.** `make up --wait` needs the controlplane container to report healthy. The runtime image is `alpine`, so the compose health check is plain `wget -q --spider http://localhost:8080/healthz`, with no extra code path in the binary. The worker has no HTTP and no health check, so `--wait` only waits for it to be running; it retries the broker connection itself (§6).
+**Health checks.** `make up --wait` needs the controlplane container to report healthy. The runtime image is `alpine`, so the compose health check is plain `wget -q -O /dev/null http://localhost:8080/healthz`, with no extra code path in the binary. The worker has no HTTP and no health check, so `--wait` only waits for it to be running; it retries the broker connection itself (§6).
 
 Everything runs in containers, so the host only needs Docker and make. Dev credentials are non-secret compose defaults (`${POSTGRES_PASSWORD:-controlplane}`) and can be overridden through the environment. No `.env` is committed.
 

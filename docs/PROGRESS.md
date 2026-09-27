@@ -17,9 +17,9 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | **2** | **Persistence**                         |        |        |       |
 | 2.1 | Schema, migrations, sqlc                  | ✅     | `6c6d690` | `make check` passes, now including `sqlc diff`; a stale query fails it. Integration tests confirmed running, not skipped, and every per-test database is dropped. Pinned: pgx v5.11.0, goose v3.28.0, sqlc 1.31.1. |
 | 2.2 | Repository: tenant and task operations    | ✅     | `1daa8f3` | `make check` gates pass; 48 store tests and subtests, 87.4% coverage of `internal/store` (the uncovered lines are database-failure branches). |
-| 2.3 | Transient-error classification            | ✅     | _not committed yet_ | `make check` passes. 34 unit cases, plus a real terminated backend: pgx returns `PgError` 57P01, which is classified as transient. |
+| 2.3 | Transient-error classification            | ✅     | `ca5a5ce` | `make check` passes. 34 unit cases, plus a real terminated backend: pgx returns `PgError` 57P01, which is classified as transient. |
 | **3** | **HTTP API**                            |        |        |       |
-| 3.1 | Server scaffolding and boot               | ⬜     |        |       |
+| 3.1 | Server scaffolding and boot               | ✅     | _not committed yet_ | `make check` passes. `make up` → `/healthz` 200. Data survives `make down && make up`. SIGTERM → `shutting down` / `stopped`, exit 0 at once. Pinned: gin v1.12.0. |
 | 3.2 | Tenant and task endpoints                 | ⬜     |        |       |
 | 3.3 | Concurrency tests                         | ⬜     |        |       |
 | **4** | **Outbound messaging**                  |        |        |       |
@@ -71,9 +71,17 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **Cancelled and timed-out contexts count as transient.** The operation didn't fail on its own merits, and it means a shutdown requeues the in-flight message instead of dead-lettering it (DESIGN.md §6).
   - **The server's error code is checked first.** A failed connection can wrap a server error, so "starting up" (`57P03`) is retried but a wrong password (`28P01`) is not.
   - **An integration test beyond the plan** terminates its own backend (`pg_terminate_backend`) to check what a Postgres restart looks like to a query: `57P01`, transient.
+- **3.1:**
+  - **quic-go upgraded from v0.59.0 to v0.59.1.** gin v1.12.0 pulls in quic-go for optional HTTP/3, and `govulncheck` failed `make check` on GO-2026-5676 (QPACK memory exhaustion), reachable from `gin.New`. v0.59.1 is the smallest version with the fix; the newer v0.6x releases aren't what gin v1.12.0 was built against.
+  - **A new `service_unavailable` code (503)**, used only by `/healthz` when the database doesn't answer, so that every non-2xx response keeps the error envelope. DESIGN.md §7 is updated.
+  - **Request ids:** a client's `X-Request-ID` is kept if it matches `^[A-Za-z0-9._-]{1,64}$` (so it can't inject text into the logs); otherwise a UUID is generated. Either way it's echoed in the response and attached to every log line of the request.
+  - **Successful `/healthz` calls aren't logged.** The compose health check polls every 5 s, which would bury the real request logs.
+  - **Decode errors name the field:** an unknown field, a wrong JSON type, malformed or trailing JSON, and a body over 64 KiB are all `validation_error`s, with `details` naming the field (or `body`). A too-large body is a 400 rather than a 413, which keeps the code list short.
+  - **The compose health check uses `wget -q -O /dev/null`**, which fails on a non-2xx response. DESIGN.md §10 is updated to match.
 
 ## Open issues
 
 Anything found along the way that isn't fixed in the current subtask.
 
 - **golangci-lint reports at most one issue per line** (its default). A gosec finding can hide behind an errcheck finding on the same line until the first one is fixed. That's harmless, because the gate still fails, but it can look like gosec missed something.
+- **gin links `go.mongodb.org/mongo-driver` into the binary** through its BSON binding and render packages, which have no build tag to leave them out. The cost is binary size only (about 26 MB unstripped); nothing calls BSON, and `govulncheck` only reports code that is reachable.
