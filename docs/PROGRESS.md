@@ -24,9 +24,9 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | 3.3 | Concurrency tests                         | ✅     | `2b0b980` | `make check` passes. 49–50 of 50 requests in flight at once. Stable over 10 consecutive runs (120 races). With the PATCH guard deliberately broken, the PATCH race test fails. |
 | **4** | **Outbound messaging**                  |        |        |       |
 | 4.1 | Messaging package: topology and envelopes | ✅     | `13719b2` | `make check` passes. Routing, dead-lettering and the delivery limit were verified against real RabbitMQ, one vhost per test; stable over 3 runs. Pinned: amqp091-go v1.15.0. |
-| 4.2 | Outbox relay                              | ✅     | _not committed yet_ | `make check` passes; 12 outbox tests, stable over 3 runs. Live: on start the relay published the `curl-demo` event from 3.2, and a new create put a second message in `worker.tasks`. |
+| 4.2 | Outbox relay                              | ✅     | `fd93574` | `make check` passes; 12 outbox tests, stable over 3 runs. Live: on start the relay published the `curl-demo` event from 3.2, and a new create put a second message in `worker.tasks`. |
 | **5** | **Worker simulator**                    |        |        |       |
-| 5.1 | Worker                                    | ⬜     |        |       |
+| 5.1 | Worker                                    | ✅     | _not committed yet_ | `make check` passes. Live: the worker drained the 2 queued tasks, a create gave `in_progress` + `done`, and `make worker ARGS="--fail-rate=1"` replaced it (one container) so a create ended `failed`. 8 updates now wait in `controlplane.task-updates` for the consumer (6.2). |
 | **6** | **Inbound consumer**                    |        |        |       |
 | 6.1 | Apply-update transaction                  | ⬜     |        |       |
 | 6.2 | AMQP consumer loop                        | ⬜     |        |       |
@@ -109,6 +109,16 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **Deferred confirms:** the publisher uses amqp091's `PublishWithDeferredConfirmWithContext`. The whole batch goes out first, then all its confirms are awaited under one 5 s timeout. Returned messages are matched to the batch by `message_id` (the task id). The returns buffer (1024) is well above the batch size, because amqp091 delivers returns synchronously and a full buffer would stall the connection.
   - **A lost broker connection stops the process** until the reconnect helper (7.1): `main` watches `NotifyClose` and returns an error, the errgroup shuts everything down, and compose restarts the container. This is the documented fallback in PLAN.md's cut line.
   - **Tests beyond the plan:** three relays on one outbox publish each of 60 events exactly once (SKIP LOCKED); `Run` backs off through 3 failures, then publishes and stops cleanly on cancel; ids outside the batch are ignored; closed-channel and 1 ns-timeout cases against real RabbitMQ.
+- **5.1:**
+  - **The confirmed-publish logic moved to `messaging.ConfirmPublisher`**, shared by the relay and the worker, so the confirm and return handling (and 4.2's closed-channel fix) exists once. `outbox.AMQPPublisher` is now a thin adapter that maps outbox rows to messages. All the outbox tests pass unchanged.
+  - **Settling rules beyond "ack last"**, now in DESIGN.md §8:
+    - A malformed task is nacked to the DLQ.
+    - A task interrupted by shutdown is requeued, which is free per 4.1's finding.
+    - A failed update publish leaves the task unacked and stops the worker. The redelivery is counted, so it's bounded by the delivery limit.
+  - **`messaging.DecodeTaskEvent` added:** the worker rejects an event with a missing id or tenant, an unknown type, or a status other than `accepted`.
+  - **The flag and env precedence:** a `WORKER_*` env var sets the default and the flag overrides it. Unknown flags (such as the cut `--seed`) and stray arguments are errors.
+  - **The fail-rate rule is `random() < rate`** with `random` in [0, 1), so 0 never fails and 1 always does. The tests inject the random value to pin both ends and the threshold.
+  - **Each worker goroutine has its own publisher channel**, since a `ConfirmPublisher` isn't safe for concurrent use.
 
 ## Open issues
 

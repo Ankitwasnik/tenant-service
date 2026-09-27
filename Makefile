@@ -15,7 +15,7 @@ GO   := $(COMPOSE) run --rm --no-deps tests
 # sqlc runs as the host user, so generated files aren't owned by root on Linux.
 SQLC := $(COMPOSE) run --rm --no-deps --user "$(shell id -u):$(shell id -g)" sqlc
 
-.PHONY: up down clean logs check fmt fmt-check lint vuln generate sqlc-check test test-reset test-drop
+.PHONY: up down clean logs worker check fmt fmt-check lint vuln generate sqlc-check test test-reset test-drop
 
 ## up: build and start the whole stack, and wait until every service is healthy
 up:
@@ -32,6 +32,12 @@ clean:
 ## logs: follow the logs of every service
 logs:
 	$(COMPOSE) logs -f
+
+## worker: replace the running worker with one using ARGS, e.g. make worker ARGS="--fail-rate=1"
+# Recreates the one worker service rather than starting a second: two workers
+# would share worker.tasks, and only some tasks would see the new ARGS.
+worker:
+	WORKER_ARGS="$(ARGS)" $(COMPOSE) up -d --no-deps --force-recreate worker
 
 ## check: every quality gate, in order; stops at the first failure
 check:

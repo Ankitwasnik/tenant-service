@@ -338,6 +338,14 @@ Beyond the contract codes there are only `validation_error` (400, with per-field
 
 Per task: delay → publish `in_progress` (confirmed) → delay → publish `done`/`failed` (confirmed) → **ack the task**. The ack comes last, so a worker crash causes a redelivery and a redo, and the deterministic `update_id`s dedupe the result.
 
+How each other outcome settles the task message:
+
+- **Malformed task** (bad JSON, missing id or tenant, unknown type, status not `accepted`): nack without requeue, so it goes to `worker.tasks.dlq`.
+- **Shutdown mid-task:** nack with requeue. RabbitMQ doesn't count that toward the delivery limit (§6), so a restart costs the task nothing.
+- **An update fails to publish:** the task is left unsettled and the worker exits (compose restarts it). The channel closing with the task unacked counts as a delivery, so a publish that can never succeed ends in the DLQ after the delivery limit instead of looping.
+
+The worker and the outbox relay publish through the same `messaging.ConfirmPublisher` (publisher confirms, `mandatory=true`, returns matched by `message_id`), one per goroutine, since an AMQP channel's confirm tracking isn't shared safely.
+
 To inject messages directly, `scripts/publish-update.sh` wraps RabbitMQ's management HTTP publish endpoint (`curl`). Bash can't easily compute the worker's UUIDv5 ids, so the script takes the id explicitly (`--update-id`, or a random one it prints):
 
 - **Duplicate:** send an update, then send it again with the same `--update-id`. The second one is logged as a duplicate and changes nothing.

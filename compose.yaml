@@ -2,7 +2,6 @@
 #
 # Credentials below are non-secret local-dev defaults; override any of them via
 # environment variables (e.g. POSTGRES_PASSWORD=... docker compose up).
-# The worker service is added once that binary exists.
 # The `tests`, `lint` and `sqlc` services are behind profiles, so `docker compose up`
 # never starts them; the Makefile runs them.
 
@@ -76,6 +75,20 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The provisioning simulator (DESIGN.md §8). Same image as the control plane.
+  # Its behavior comes from WORKER_ARGS, so `make worker ARGS="--fail-rate=1"`
+  # replaces it with a differently-configured one (never a second one).
+  worker:
+    build: .
+    image: tenant-service:local
+    command: worker ${WORKER_ARGS:-}
+    environment:
+      AMQP_URL: amqp://${RABBITMQ_USER:-controlplane}:${RABBITMQ_PASSWORD:-controlplane}@rabbitmq:5672/
+    depends_on:
       rabbitmq:
         condition: service_healthy
     restart: unless-stopped

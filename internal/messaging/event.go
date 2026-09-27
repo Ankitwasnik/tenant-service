@@ -4,6 +4,9 @@
 package messaging
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/google/uuid"
 
 	"github.com/Ankitwasnik/tenant-service/internal/domain"
@@ -34,4 +37,25 @@ func NewTaskEvent(t domain.Task) TaskEvent {
 // TaskRoutingKey is the routing key a task of type t is published with.
 func TaskRoutingKey(t domain.TaskType) string {
 	return "task." + string(t)
+}
+
+// DecodeTaskEvent parses and validates a task message, as the worker receives
+// it. Any failure wraps ErrInvalidMessage: the message is dead-lettered.
+func DecodeTaskEvent(body []byte) (TaskEvent, error) {
+	var e TaskEvent
+	if err := json.Unmarshal(body, &e); err != nil {
+		return TaskEvent{}, fmt.Errorf("%w: decode task event: %w", ErrInvalidMessage, err)
+	}
+	switch {
+	case e.ID == uuid.Nil:
+		return TaskEvent{}, fmt.Errorf("%w: id is missing", ErrInvalidMessage)
+	case e.TenantID == uuid.Nil:
+		return TaskEvent{}, fmt.Errorf("%w: tenant_id is missing", ErrInvalidMessage)
+	case !e.Type.Valid():
+		return TaskEvent{}, fmt.Errorf("%w: unknown task type %q", ErrInvalidMessage, e.Type)
+	case e.Status != domain.TaskAccepted:
+		// The event is the task as committed, and tasks are created accepted.
+		return TaskEvent{}, fmt.Errorf("%w: task status %q, want accepted", ErrInvalidMessage, e.Status)
+	}
+	return e, nil
 }
