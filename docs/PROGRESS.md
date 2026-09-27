@@ -20,8 +20,8 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | 2.3 | Transient-error classification            | ✅     | `ca5a5ce` | `make check` passes. 34 unit cases, plus a real terminated backend: pgx returns `PgError` 57P01, which is classified as transient. |
 | **3** | **HTTP API**                            |        |        |       |
 | 3.1 | Server scaffolding and boot               | ✅     | `3b07c62` | `make check` passes. `make up` → `/healthz` 200. Data survives `make down && make up`. SIGTERM → `shutting down` / `stopped`, exit 0 at once. Pinned: gin v1.12.0. |
-| 3.2 | Tenant and task endpoints                 | ✅     | _not committed yet_ | `make check` gates pass; 73 API tests and subtests, 95.3% coverage of `internal/api`. Live: a curl create returns 201 + `Location`, with the tenant in `provisioning` (the `curl-demo` tenant is left in the dev DB; its event should go out once the relay lands in 4.2). |
-| 3.3 | Concurrency tests                         | ⬜     |        |       |
+| 3.2 | Tenant and task endpoints                 | ✅     | `6608b42` | `make check` gates pass; 73 API tests and subtests, 95.3% coverage of `internal/api`. Live: a curl create returns 201 + `Location`, with the tenant in `provisioning` (the `curl-demo` tenant is left in the dev DB; its event should go out once the relay lands in 4.2). |
+| 3.3 | Concurrency tests                         | ✅     | _not committed yet_ | `make check` passes. 49–50 of 50 requests in flight at once. Stable over 10 consecutive runs (120 races). With the PATCH guard deliberately broken, the PATCH race test fails. |
 | **4** | **Outbound messaging**                  |        |        |       |
 | 4.1 | Messaging package: topology and envelopes | ⬜     |        |       |
 | 4.2 | Outbox relay                              | ⬜     |        |       |
@@ -88,6 +88,12 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **A malformed path id's message quotes the id** (`"nope" is not a known id`), with the same `*_not_found` code as an unknown one.
   - **JSON views are separate from the domain types** (`views.go`), so the wire format can't change by accident when a domain struct does. An empty page is `"items": []`, never `null`. `error` is omitted from a task unless it failed.
   - **`FinishTask` / `SetTenantStatus` moved to `internal/testutil`**, so the store and API tests share one stand-in for the worker.
+- **3.3:**
+  - **A fourth race beyond the plan:** 20 PATCHes and 20 DELETEs at the same version, on the same tenant. Exactly one request wins, whichever kind. Losing PATCHes get `tenant_version_conflict` and losing DELETEs `tenant_update_not_allowed`, the version goes up by exactly 1, and there is one open task.
+  - **Each race runs 3 rounds** on fresh tenants, and asserts the database afterwards as well as the HTTP counts: one tenant, task and outbox row for creates; the winner's name stored; version +1; exactly one open task, of the winner's type.
+  - **Proof of overlap:** a wrapper counts requests inside the handler at once, and the test fails if the peak is below 2. In practice it's 49–50 of 50.
+  - **The pool is sized for contention:** `pool_max_conns=25`, so most racing requests hold a database connection at once and the race happens in Postgres, not in the Go pool's queue. The race tests aren't `t.Parallel`, which keeps the total connections well under Postgres's limit of 100.
+  - **Mutation check:** with the PATCH guard's `status` and `version` conditions removed from the generated SQL, the PATCH race gives 1 × 202 and 49 × 500 and the test fails. It also showed the safety net working: the `tasks_one_open_per_tenant` index rejected the 49 extra transactions. The generated file was restored from git afterwards.
 
 ## Open issues
 
