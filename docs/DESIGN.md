@@ -15,7 +15,7 @@ Once agreed, the relevant parts get folded into `README.md`.
 | Broker          | RabbitMQ 4.3 (`rabbitmq:4.3.6-management-alpine`), quorum queues, management plugin | Publisher confirms, manual acks, DLX, `x-delivery-limit`; HTTP publish API for scripts |
 | AMQP client     | `github.com/rabbitmq/amqp091-go`                           | The official client                                                              |
 | Logging         | `log/slog` JSON                                            | stdlib                                                                           |
-| Lint / format   | `golangci-lint` v2: linters (incl. `gosec`) + formatters (`gofumpt`, `goimports`) | One tool, one config; `golangci-lint fmt` formats, `fmt --diff` checks |
+| Lint / format   | `golangci-lint` v2: linters (incl. `gosec`) + formatters (`gofumpt`, `goimports`); `shellcheck` for `scripts/` | One tool, one config; `golangci-lint fmt` formats, `fmt --diff` checks |
 | Vuln scan       | `govulncheck`                                              | Official Go vulnerability DB                                                     |
 | Runner          | `make` + `docker compose`                                  | Host needs only Docker + make; no local Go toolchain                             |
 
@@ -348,9 +348,11 @@ The worker and the outbox relay publish through the same `messaging.ConfirmPubli
 
 To inject messages directly, `scripts/publish-update.sh` wraps RabbitMQ's management HTTP publish endpoint (`curl`). Bash can't easily compute the worker's UUIDv5 ids, so the script takes the id explicitly (`--update-id`, or a random one it prints):
 
-- **Duplicate:** send an update, then send it again with the same `--update-id`. The second one is logged as a duplicate and changes nothing.
+- **Duplicate:** replay one of the worker's own updates by its id (the consumer logs every `update_id`), or send any update twice with `--count 2`. The repeat is logged as a duplicate and changes nothing.
 - **Stale / out-of-order:** send `in_progress` with a fresh id to a task that is already `done`. It's logged as stale and changes nothing.
-- **Poison:** `--raw '<not json>'` publishes the body as-is. It lands in `controlplane.task-updates.dlq`, and the consumer keeps running.
+- **Poison:** `--raw '<not json>'` publishes the body as-is; `--status accepted` and an unknown `--task-id` are poison too. Each lands in `controlplane.task-updates.dlq`, and the consumer keeps running.
+
+`--task-id latest` looks up the newest task through the API, so the recipes need no copying of ids. The script needs only bash (3.2, the macOS default) and curl.
 
 ## 9. Repository layout
 

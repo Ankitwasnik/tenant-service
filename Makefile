@@ -55,9 +55,10 @@ fmt:
 fmt-check:
 	$(LINT) golangci-lint fmt --diff
 
-## lint: static analysis, including gosec
+## lint: static analysis: golangci-lint (including gosec) for Go, shellcheck for scripts/
 lint:
 	$(LINT) golangci-lint run
+	$(COMPOSE) run --rm --no-deps shellcheck scripts/*.sh
 
 ## generate: regenerate the sqlc code in internal/store/sqlcgen (committed)
 generate:

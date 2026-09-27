@@ -32,8 +32,8 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | 6.2 | AMQP consumer loop                        | ✅     | `85645c6` (with 6.3) | `make check` passes; 10 consumer tests. Live: the 8 queued updates were applied (one `in_progress` correctly stale, arriving after its `done`). A fresh create reached `active` in about 3 s via the API, and DELETE on the failed tenant reached `destroyed`. |
 | 6.3 | End-to-end test                           | ✅     | `85645c6` (with 6.2) | `make check` passes; 3 end-to-end tests, stable over 5 runs (about 0.3 s each). |
 | **7** | **Resilience, tooling, docs**           |        |        |       |
-| 7.1 | Broker reconnect helper                   | ✅     | _not committed yet_ | `make check` passes; 5 reconnect tests. Live: RabbitMQ stopped, a create during the outage was accepted (event held in the outbox), and after the broker came back the tenant went `active` in about 8 s. `docker compose restart rabbitmq` then a create: `active` in about 5 s. The control plane and worker never restarted (0 restarts, same start time). |
-| 7.2 | publish-update script                     | ⬜     |        |       |
+| 7.1 | Broker reconnect helper                   | ✅     | `e333e13` | `make check` passes; 5 reconnect tests. Live: RabbitMQ stopped, a create during the outage was accepted (event held in the outbox), and after the broker came back the tenant went `active` in about 8 s. `docker compose restart rabbitmq` then a create: `active` in about 5 s. The control plane and worker never restarted (0 restarts, same start time). |
+| 7.2 | publish-update script                     | ✅     | _not committed yet_ | `make check` passes (now with shellcheck). Live: every recipe behaved as documented. Replaying a worker update id gives `duplicate`, `--count 2` gives `stale` then `duplicate`, and `in_progress` after `done` is `stale`. Not-JSON, `accepted` and an unknown task each went to the DLQ (0 → 3). The tenant was unchanged, and a create afterwards reached `active`. |
 | 7.3 | README and a cold-run check               | ⬜     |        |       |
 
 ## Deviations from the plan
@@ -162,6 +162,12 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **Startup no longer needs the broker.** A failed first dial is retried like a lost connection. The backoff is 500 ms doubling to 15 s, jittered, and resets once a connection has stayed up 30 s.
   - **The stop-on-connection-loss fallback from 4.2 and 5.1 is gone** from both `main`s, along with their `NotifyClose` watchers.
   - **Tests: real connections instead of a fake dialer**, except where a fake is the point. A fake `amqp.Connection` can't exercise `NotifyClose`. So the reconnect cases use real RabbitMQ: a broker-side force-close through the management API (`testutil.Management.CloseConnections`), a client-side close, and a session that fails. The injectable `Dial` covers failed dials with growing backoff (the lower bounds double: at least 20/40/80 ms) and cancel during a 1-hour backoff. It imports the real components and wires them as the two `main`s do: API, relay and consumer on one connection, and the worker on its own, restartable with a new config.
+- **7.2:**
+  - **Two options beyond the plan's list:** `--task-id latest` (the newest task, looked up through the API with a `sed` match, so there's no `jq` dependency) and `--count N` (the same message N times, a one-command duplicate). Unknown options and a bad `--count` are errors.
+  - **The duplicate recipe can replay the worker's own update.** The consumer logs every `update_id`, including the deterministic UUIDv5s the worker computed. Replaying one is a true duplicate of real traffic, not just a message sent twice. DESIGN.md §8 now lists both ways.
+  - **More poison than the plan's `--raw`:** `--status accepted` and an unknown `--task-id` are dead-lettered too, so all three of the brief's poison kinds are reproducible.
+  - **Written for bash 3.2**, the macOS default: no bash 4 features. JSON escaping is done in bash, so it needs only curl. It exits non-zero if the broker doesn't route the message.
+  - **ShellCheck added to `make lint`** (pinned `koalaman/shellcheck:v0.11.0` compose service), so the script stays checked. Verified: a script with an unquoted variable fails `make lint`. DESIGN.md §1 is updated.
 
 ## Open issues
 
