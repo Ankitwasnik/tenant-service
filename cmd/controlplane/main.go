@@ -1,6 +1,6 @@
 // Command controlplane runs the tenant provisioning control plane: the HTTP
-// API, the outbox relay and (from PLAN.md 6.2) the task-update consumer
-// (DESIGN.md §2).
+// API, the outbox relay and the task-update consumer, as goroutines in one
+// errgroup (DESIGN.md §2).
 package main
 
 import (
@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Ankitwasnik/tenant-service/internal/api"
+	"github.com/Ankitwasnik/tenant-service/internal/consumer"
 	"github.com/Ankitwasnik/tenant-service/internal/messaging"
 	"github.com/Ankitwasnik/tenant-service/internal/outbox"
 	"github.com/Ankitwasnik/tenant-service/internal/store"
@@ -80,6 +81,7 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("broker ready")
 	relay := outbox.NewRelay(repo, publisher, logger, outbox.Config{})
+	updates := consumer.New(repo, logger, consumer.Config{})
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -100,6 +102,7 @@ func run(logger *slog.Logger) error {
 		return nil
 	})
 	g.Go(func() error { return relay.Run(gctx) })
+	g.Go(func() error { return updates.Run(gctx, conn) })
 	g.Go(func() error {
 		select {
 		case <-gctx.Done():

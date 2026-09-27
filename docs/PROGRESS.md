@@ -28,9 +28,9 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | **5** | **Worker simulator**                    |        |        |       |
 | 5.1 | Worker                                    | ✅     | `3399448` | `make check` passes. Live: the worker drained the 2 queued tasks, a create gave `in_progress` + `done`, and `make worker ARGS="--fail-rate=1"` replaced it (one container) so a create ended `failed`. 8 updates now wait in `controlplane.task-updates` for the consumer (6.2). |
 | **6** | **Inbound consumer**                    |        |        |       |
-| 6.1 | Apply-update transaction                  | ✅     | _not committed yet_ | `make check` passes; 17 update tests and subtests, stable over 5 runs. With the task-row lock removed, the concurrency test fails 20/20 (task regressed to `in_progress`). |
-| 6.2 | AMQP consumer loop                        | ⬜     |        |       |
-| 6.3 | End-to-end test                           | ⬜     |        |       |
+| 6.1 | Apply-update transaction                  | ✅     | `0a53817` | `make check` passes; 17 update tests and subtests, stable over 5 runs. With the task-row lock removed, the concurrency test fails 20/20 (task regressed to `in_progress`). |
+| 6.2 | AMQP consumer loop                        | ✅     | _not committed yet_ | `make check` passes; 10 consumer tests. Live: the 8 queued updates were applied (one `in_progress` correctly stale, arriving after its `done`). A fresh create reached `active` in about 3 s via the API, and DELETE on the failed tenant reached `destroyed`. |
+| 6.3 | End-to-end test                           | ✅     | _not committed yet_ | `make check` passes; 3 end-to-end tests, stable over 5 runs (about 0.3 s each). |
 | **7** | **Resilience, tooling, docs**           |        |        |       |
 | 7.1 | Broker reconnect helper                   | ⬜     |        |       |
 | 7.2 | publish-update script                     | ⬜     |        |       |
@@ -130,6 +130,31 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **My mistake during that check, caught by the gates:** I restored the generated file with `git checkout`. The committed version predates this subtask, so that also removed the new `LockTask` and `UpdateTaskStatus` code, and `make sqlc-check` failed on it. Regenerating fixed it. For generated files, restore by running `make generate`, not `git checkout`.
   - **Both permanent errors roll back the inbox row too**, so a message replayed from the DLQ after a fix is processed afresh rather than skipped as a duplicate.
   - **`error` is stored only for a `failed` update that carries one;** otherwise it stays NULL.
+- **6.2:**
+  - **A shared `internal/backoff` package** (`New`/`Next`/`Reset`, `Jitter`, `Sleep`). The relay and the consumer use the same capped, jittered doubling, and the worker uses its context-aware `Sleep`, instead of three copies. The relay's and worker's tests pass unchanged.
+  - **The handler and the loop are split** as in the worker: `Handle` settles one delivery and is unit-tested with a scripted fake store. `Run` owns the channel, prefetch 16 and 4 goroutines.
+  - **Settling rules as built:**
+    - applied, duplicate or stale: ack
+    - malformed, a permanent error or a panic: DLQ
+    - a transient error: retry in-process with 100 ms → 30 s jittered backoff, holding the message
+    - shutdown during a retry: requeue
+    - `Handle` returns an error only if the ack or nack itself fails (the channel is gone), which stops the consumer.
+  - **A broken invariant is logged at error level**; other permanent errors at warn. DESIGN.md §5 asks for the invariant case to be loud.
+  - **Tests beyond the plan:**
+    - Duplicate and stale results are acked, not dead-lettered.
+    - After a recovered panic, the next message is handled normally.
+    - A CHECK violation and a plain error are permanent.
+    - Integration: a duplicate delivery is applied once (the version stays 2), and three different poison messages (malformed, `accepted`, unknown task) are each found in the DLQ by message id, while the valid message after them is applied.
+- **6.3:**
+  - **The plan's failure scenario was corrected.** "fail-rate 1 → `failed`, then DELETE → `destroyed`" can't happen: at fail-rate 1 the destroy fails as well. The test now does what the README will tell a reviewer to do: DELETE with the worker still failing (→ `failed` again, which also covers `failed → destroying → failed`), restart the worker at fail-rate 0 (as `make worker` does), then DELETE → `destroyed`. DESIGN.md §11 is updated.
+  - **Driven through the HTTP API only**, like a client: the tests never read the database, so they check what a reviewer would see.
+  - **Beyond the plan:**
+    - The update path (PATCH → `updating` → `active` with the new name).
+    - The version after every step, and the task history via `GET /v1/tasks?tenant_id=`.
+    - A PATCH on a failed tenant is refused.
+    - A destroyed tenant's slug stays taken.
+    - 20 tenants created at once all reach `active`, which exercises relay batching, the worker's parallelism and interleaved consumer goroutines together.
+  - **A new package, `internal/e2e`**, with only a test file. It imports the real components and wires them as the two `main`s do: API, relay and consumer on one connection, and the worker on its own, restartable with a new config.
 
 ## Open issues
 

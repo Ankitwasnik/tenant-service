@@ -6,9 +6,9 @@ package outbox
 import (
 	"context"
 	"log/slog"
-	"math/rand/v2"
 	"time"
 
+	"github.com/Ankitwasnik/tenant-service/internal/backoff"
 	"github.com/Ankitwasnik/tenant-service/internal/store"
 )
 
@@ -65,7 +65,7 @@ func NewRelay(s Store, p Publisher, logger *slog.Logger, cfg Config) *Relay {
 // the events wait in the outbox until the relay catches up.
 func (r *Relay) Run(ctx context.Context) error {
 	r.logger.Info("outbox relay started")
-	backoff := r.cfg.MinBackoff
+	retry := backoff.New(r.cfg.MinBackoff, r.cfg.MaxBackoff)
 	for {
 		claimed, marked, err := r.Step(ctx)
 		if ctx.Err() != nil {
@@ -76,24 +76,21 @@ func (r *Relay) Run(ctx context.Context) error {
 		wait := r.cfg.PollInterval
 		switch {
 		case err != nil:
+			wait = retry.Next()
 			r.logger.Warn("outbox relay step failed; backing off",
-				"error", err, "claimed", claimed, "published", marked, "backoff", backoff)
-			wait = jitter(backoff)
-			backoff = min(2*backoff, r.cfg.MaxBackoff)
+				"error", err, "claimed", claimed, "published", marked, "backoff", wait)
 		case claimed == r.cfg.BatchSize:
 			// A full batch: there may be more waiting, so go again right away.
-			backoff = r.cfg.MinBackoff
+			retry.Reset()
 			wait = 0
 		default:
-			backoff = r.cfg.MinBackoff
+			retry.Reset()
 		}
 
 		if wait > 0 {
-			select {
-			case <-ctx.Done():
+			if err := backoff.Sleep(ctx, wait); err != nil {
 				r.logger.Info("outbox relay stopped")
 				return nil
-			case <-time.After(wait):
 			}
 		}
 	}
@@ -107,11 +104,4 @@ func (r *Relay) Step(ctx context.Context) (claimed, marked int, err error) {
 		r.logger.Info("outbox events published", "count", marked)
 	}
 	return claimed, marked, err
-}
-
-// jitter spreads a backoff over [d/2, d], so replicas that failed together
-// don't all retry at the same instant.
-func jitter(d time.Duration) time.Duration {
-	half := d / 2
-	return half + rand.N(half+1) //nolint:gosec // timing jitter, not security
 }

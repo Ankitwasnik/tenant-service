@@ -435,7 +435,10 @@ Integration tests (real Postgres + RabbitMQ):
   - Same `update_id` delivered concurrently → applied once.
   - Malformed message, invalid status (`accepted`), and unknown task → DLQ, and a valid message sent afterwards is still processed.
   - Terminal update whose tenant isn't in the expected status → rolled back (task unchanged), DLQ.
-- **End to end:** stack plus worker. Create → tenant `active`, task `done`. With `fail-rate=1` → tenant `failed`, then DELETE → `destroyed`.
+- **End to end** (`internal/e2e`): the whole stack in-process, driven and observed through the HTTP API only.
+  - Happy path: create → `active`, PATCH → `updating` → `active` with the new name, DELETE → `destroyed`, with versions 2/4/6 and three `done` tasks.
+  - Failures: with `fail-rate=1`, create → `failed`, and DELETE → `failed` again (the destroy fails too). Then the worker is restarted with `fail-rate=0`, as `make worker ARGS=...` does, and DELETE → `destroyed`.
+  - 20 tenants created at once all reach `active`.
 
 The concurrency tests are the in-repo race demonstration the brief's tip asks for. They send real concurrent HTTP requests at the API and assert on exact outcome counts.
 

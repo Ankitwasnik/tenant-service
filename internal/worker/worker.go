@@ -16,6 +16,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/Ankitwasnik/tenant-service/internal/backoff"
 	"github.com/Ankitwasnik/tenant-service/internal/domain"
 	"github.com/Ankitwasnik/tenant-service/internal/messaging"
 )
@@ -67,7 +68,7 @@ func NewProcessor(cfg Config, pub UpdatePublisher, logger *slog.Logger) *Process
 		pub:    pub,
 		logger: logger,
 		random: rand.Float64, //nolint:gosec // simulated outcomes, not security
-		sleep:  sleepCtx,
+		sleep:  backoff.Sleep,
 	}
 }
 
@@ -133,17 +134,6 @@ func (p *Processor) delay() time.Duration {
 		return p.cfg.MinDelay
 	}
 	return p.cfg.MinDelay + time.Duration(p.random()*float64(spread+1))
-}
-
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
 }
 
 // Run consumes worker.tasks until ctx is cancelled (then it returns nil) or
