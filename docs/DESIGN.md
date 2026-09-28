@@ -1,7 +1,6 @@
 # Design - Tenant Provisioning Control Plane
 
-Status: **draft for review**. Nothing is implemented yet; this is the plan we build against.
-Once agreed, the relevant parts get folded into `README.md`.
+Status: **implemented.** This is the design the code was built against, kept up to date as the build changed it. [`README.md`](../README.md) has the short version; [`PROGRESS.md`](PROGRESS.md) records each place the build deviated from the original plan, and why.
 
 ## 1. Stack
 
@@ -397,11 +396,11 @@ sqlc.yaml, Makefile, .golangci.yml, README.md
 
 **Health checks.** `make up --wait` needs the controlplane container to report healthy. The runtime image is `alpine`, so the compose health check is plain `wget -q -O /dev/null http://localhost:8080/healthz`, with no extra code path in the binary. The worker has no HTTP and no health check, so `--wait` only waits for it to be running; it retries the broker connection itself (§6).
 
-Everything runs in containers, so the host only needs Docker and make. Dev credentials are non-secret compose defaults (`${POSTGRES_PASSWORD:-controlplane}`) and can be overridden through the environment. No `.env` is committed.
+Everything runs in containers, so the host only needs Docker and make. All settings (credentials, host ports, worker flags) come from `.env`, which is git-ignored. `.env.template` is committed, and documents every variable with its local-development value. `compose.yaml` has **no defaults**: each setting is a plain `${VAR}` from `.env`. A variable missing from `.env` is left blank, with a compose warning. `make` creates `.env` from the template when it doesn't exist, so a fresh `git clone && make up` still works with no manual step, and it never overwrites an existing `.env`. A variable set in the shell overrides `.env` (standard compose precedence), which is how `make worker ARGS=...` passes `WORKER_ARGS`. `scripts/publish-update.sh` reads the same `.env` for the RabbitMQ credentials and ports. The values are non-secret dev ones, since everything binds to `127.0.0.1`.
 
 **Configuration** is env-only: `DATABASE_URL`, `AMQP_URL`, `HTTP_ADDR` (default `:8080`), plus the worker's `WORKER_*` flags. Compose builds the URLs from the credential defaults above.
 
-**Ports.** Only two ports are published to the host, both on `127.0.0.1`: the API on `8080` and the RabbitMQ management UI/HTTP API on `15672`. Postgres (5432) and AMQP (5672) stay on the compose network, because nothing on the host needs them, and publishing them would clash with a local Postgres or RabbitMQ on a reviewer's machine. Each host port can be overridden (`API_HOST_PORT`, `RABBITMQ_MGMT_HOST_PORT`). For ad-hoc DB access, use `docker compose exec postgres psql -U controlplane`.
+**Ports.** Three ports are published to the host, all on `127.0.0.1`: the API on `8080`, the RabbitMQ management UI/HTTP API on `15672`, and Postgres on `6432`, for a desktop client such as DBeaver. Postgres goes on 6432, not its default 5432, so it doesn't clash with a Postgres already running on a reviewer's machine. AMQP (5672) stays on the compose network, since nothing on the host needs it. Each host port is set in `.env` (`API_HOST_PORT`, `RABBITMQ_MGMT_HOST_PORT`, `POSTGRES_HOST_PORT`). The services themselves talk to Postgres over the compose network, never through the published port.
 
 **Test isolation** uses the same postgres and rabbitmq containers as the dev stack, with no second compose file. Tests get their own **database** (`controlplane_test`) and their own **RabbitMQ vhost** (`test`), both created fresh by `make test` (`dropdb --if-exists` + `createdb` via `docker compose exec postgres`; `rabbitmqctl delete_vhost` / `add_vhost` + `set_permissions` via `docker compose exec rabbitmq`) and dropped afterwards. The vhost is what matters: queues are per vhost, so a running dev controlplane or worker can't steal the tests' messages, and the tests can't touch dev queues. Every run starts empty, and dev tenants are never touched. Within a run, each database test goes one step further: `testutil.NewDatabase` creates its own empty database on the same server (and drops it afterwards), so tests can run in parallel without seeing each other's rows. `controlplane_test` is the admin connection they create those from. The cost against a separate throwaway stack: no tmpfs or `fsync=off` speed-up, which is negligible at this suite size.
 
@@ -464,7 +463,7 @@ The concurrency tests are the in-repo race demonstration the brief's tip asks fo
 
 Agreed cuts. None of these are required by the brief:
 
-- **No `cmd/loadtest`:** the Go concurrency tests (§11) show the races are handled.
+- **No `cmd/loadtest`:** the Go concurrency tests (§11) show the races are handled. Added later instead, as a lighter substitute: `make race` (the concurrency tests alone, with outcome counts) and `scripts/race-demo.sh` / `make race-demo` (concurrent creates, PATCHes and DELETEs against the running stack with `curl --parallel`, tallied and checked for exactly one winner each). Neither is a load test.
 - **No worker `--duplicate-rate` / `--out-of-order-rate`:** `scripts/publish-update.sh` reproduces duplicate, out-of-order and poison messages by publishing directly to the broker, which the brief explicitly accepts. Restarting the worker with `--fail-rate` / delay flags covers the failure and timing scenarios.
 - **No `GET /v1/tenants/{id}/tasks`:** `GET /v1/tasks?tenant_id=` covers it.
 - **Relay polls only** (200 ms), with no in-process nudge after commit.

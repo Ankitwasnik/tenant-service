@@ -24,10 +24,11 @@
 #   --count <n>            Publish the same message n times (default 1).
 #   -h, --help             Show this help.
 #
-# Environment (defaults match compose.yaml):
-#   RABBITMQ_API_URL   default http://127.0.0.1:${RABBITMQ_MGMT_HOST_PORT:-15672}
-#   RABBITMQ_USER, RABBITMQ_PASSWORD   default controlplane / controlplane
-#   API_URL            default http://127.0.0.1:${API_HOST_PORT:-8080}
+# Settings come from the repo's .env, the same file compose.yaml reads (make
+# creates it from .env.template): RABBITMQ_USER, RABBITMQ_PASSWORD,
+# RABBITMQ_MGMT_HOST_PORT and API_HOST_PORT. A variable already set in the
+# environment wins, as it does for docker compose. RABBITMQ_API_URL and
+# API_URL, if set, replace the http://127.0.0.1:<port> URLs built from them.
 #
 # See what the consumer did with it:
 #   docker compose logs controlplane | grep '"update processed"\|dead-letter'
@@ -39,10 +40,12 @@ set -euo pipefail
 usage() { sed -n '3,/^# Written for/p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "publish-update: $*" >&2; exit 1; }
 
-RABBITMQ_API_URL=${RABBITMQ_API_URL:-http://127.0.0.1:${RABBITMQ_MGMT_HOST_PORT:-15672}}
-RABBITMQ_USER=${RABBITMQ_USER:-controlplane}
-RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-controlplane}
-API_URL=${API_URL:-http://127.0.0.1:${API_HOST_PORT:-8080}}
+# shellcheck source=lib/env.sh
+source "$(dirname "$0")/lib/env.sh"
+load_env RABBITMQ_USER RABBITMQ_PASSWORD RABBITMQ_MGMT_HOST_PORT API_HOST_PORT
+
+RABBITMQ_API_URL=${RABBITMQ_API_URL:-http://127.0.0.1:$RABBITMQ_MGMT_HOST_PORT}
+API_URL=${API_URL:-http://127.0.0.1:$API_HOST_PORT}
 
 task_id="" status="" update_id="" error_msg="" raw="" have_raw=false count=1
 

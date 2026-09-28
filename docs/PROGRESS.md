@@ -33,8 +33,8 @@ A subtask is ✅ only when its commit is in and `make check` passes on it, plus 
 | 6.3 | End-to-end test                           | ✅     | `85645c6` (with 6.2) | `make check` passes; 3 end-to-end tests, stable over 5 runs (about 0.3 s each). |
 | **7** | **Resilience, tooling, docs**           |        |        |       |
 | 7.1 | Broker reconnect helper                   | ✅     | `e333e13` | `make check` passes; 5 reconnect tests. Live: RabbitMQ stopped, a create during the outage was accepted (event held in the outbox), and after the broker came back the tenant went `active` in about 8 s. `docker compose restart rabbitmq` then a create: `active` in about 5 s. The control plane and worker never restarted (0 restarts, same start time). |
-| 7.2 | publish-update script                     | ✅     | _not committed yet_ | `make check` passes (now with shellcheck). Live: every recipe behaved as documented. Replaying a worker update id gives `duplicate`, `--count 2` gives `stale` then `duplicate`, and `in_progress` after `done` is `stale`. Not-JSON, `accepted` and an unknown task each went to the DLQ (0 → 3). The tenant was unchanged, and a create afterwards reached `active`. |
-| 7.3 | README and a cold-run check               | ⬜     |        |       |
+| 7.2 | publish-update script                     | ✅     | `a2f6bac` | `make check` passes (now with shellcheck). Live: every recipe behaved as documented. Replaying a worker update id gives `duplicate`, `--count 2` gives `stale` then `duplicate`, and `in_progress` after `done` is `stale`. Not-JSON, `accepted` and an unknown task each went to the DLQ (0 → 3). The tenant was unchanged, and a create afterwards reached `active`. |
+| 7.3 | README and a cold-run check               | ✅     | _not committed yet_ | Fresh clone, own compose project (empty volumes and caches): `make up` healthy in 15 s, and every README command worked as written. Walkthrough: create → `active` v2, PATCH → `active` v4, stale PATCH → `tenant_version_conflict`, DELETE → `destroyed`. `make worker ARGS="--fail-rate=1"` (1 container): create → `failed`, DELETE → `failed`, `make worker`, DELETE → `destroyed`. publish-update recipes: stale, duplicate, stale, 3 → DLQ. `make test` passed in 26 s, `make check` in 24 s. |
 
 ## Deviations from the plan
 
@@ -168,6 +168,34 @@ Record here anything built differently from `DESIGN.md` / `PLAN.md`, and why. If
   - **More poison than the plan's `--raw`:** `--status accepted` and an unknown `--task-id` are dead-lettered too, so all three of the brief's poison kinds are reproducible.
   - **Written for bash 3.2**, the macOS default: no bash 4 features. JSON escaping is done in bash, so it needs only curl. It exits non-zero if the broker doesn't route the message.
   - **ShellCheck added to `make lint`** (pinned `koalaman/shellcheck:v0.11.0` compose service), so the script stays checked. Verified: a script with an unquoted variable fails `make lint`. DESIGN.md §1 is updated.
+- **7.3:**
+  - **README written from the brief's list:** architecture diagram and flow, design decisions and trade-offs (condensed from DESIGN.md, including the findings from the build), setup, API usage with curl, the error-code table, and both kinds of negative scenario with example commands. Every command in it was run as written against a fresh clone.
+  - **Bug found by the cold run and fixed: `make clean` left the Go and lint cache volumes behind.** `docker compose down --volumes` skips services whose profile isn't active, and the caches belong to the profile-only `tests` and `lint` services. `make clean` now passes `--profile test --profile tools`, and removed all 5 of the cold-check project's volumes.
+  - **Honest limit of the cold run:** it had its own compose project, so empty volumes, database and caches. But Docker's image and BuildKit caches are shared machine-wide, so base images and the image build's module cache were warm. A reviewer's first `make up` downloads more and takes longer. What it proves is that nothing depends on state from the dev stack.
+  - **My mistake in the check script:** it exported `COMPOSE_PROJECT_NAME`, which leaked into its last step, so "bring the dev stack back" started a second copy of the cold-check project instead. Caught by listing containers and volumes afterwards: torn down with the fixed `make clean`, then the real dev stack restarted with its 10 tenants intact.
+  - **DESIGN.md's header** no longer says "draft; nothing implemented". It now says the design is implemented, and points to README.md and PROGRESS.md.
+- **After 7.3 (at the user's request): Postgres is published on `127.0.0.1:6432`** in `compose.yaml`, for desktop clients such as DBeaver. The original design kept it off the host, to avoid clashing with a local Postgres. 6432 keeps that benefit while allowing access; this machine already has something on 5432. It can be overridden with `POSTGRES_HOST_PORT`. The services still use the compose network. README.md and DESIGN.md §10 are updated, and `make test` still passes.
+- **After 7.3 (at the user's request): all settings moved to `.env`, with no defaults in `compose.yaml`.**
+  - `.env.template` (committed) documents every variable with its local-dev value. `.env` (git-ignored) holds the values.
+  - Every `${VAR:-default}` in compose is now a plain `${VAR}`. (A `${VAR:?...}` required-variable form was tried first, then removed at the user's request.) A variable missing from `.env` is left blank, with a compose warning.
+  - `make` creates `.env` from the template when it's missing, so the brief's cold `git clone && make up` needs no manual step. It never overwrites an existing `.env`.
+  - A shell variable still overrides `.env` (standard compose precedence). Verified with `API_HOST_PORT=9090`. `make worker ARGS=...` relies on this for `WORKER_ARGS`.
+  - `scripts/publish-update.sh` no longer carries its own defaults. It reads the RabbitMQ credentials and ports from the same `.env`: parsed, not sourced, with the shell winning. It fails clearly if `.env` is missing.
+  - Application-level defaults in the Go code (`HTTP_ADDR` `:8080`, the worker's delay and fail-rate defaults) are unchanged: they're the binaries' documented flag defaults, not compose settings.
+  - README.md and DESIGN.md §10 are updated. `make check` passes, and `make up` is healthy.
+- **After 7.3 (at the user's request): `make race` and `scripts/race-demo.sh` (`make race-demo`)**, two one-command demonstrations that the race conditions are handled, standing in for the `cmd/loadtest` cut in DESIGN.md §13.
+  - `make race` runs only the concurrency tests (HTTP races, concurrent update delivery, several relays, many tenants at once), verbosely. Each race's log line now includes its outcome tally, e.g. `→ 1 × 202, 49 × 409 tenant_version_conflict`.
+  - `race-demo.sh` fires N identical requests at once at the running stack with `curl --parallel --parallel-immediate` (one connection each): creates of one slug, then PATCHes at one version, then DELETEs, waiting for the worker between batches. It tallies each batch and checks exactly one winner, and that the tenant never has more than one open task. It passed live at N = 20, 50 and 150, in about 6 s.
+  - The `.env` loader is now shared: `scripts/lib/env.sh`, used by both scripts. ShellCheck follows it (`-x -P SCRIPTDIR`) and caught one unused variable in the new script.
+  - The e2e package gained a `TestMain` that puts gin in test mode, so its tests don't print gin's debug route banner.
+  - README.md (a new "Demonstrating that the race conditions are handled" section and the command table) and DESIGN.md §13 are updated.
+- **After 7.3 (at the user's request): a Postman collection**, `docs/postman/tenant-service.postman_collection.json` (v2.1, 24 requests in 3 folders).
+  - Folder 1: the lifecycle, with self-repeating "Wait until …" requests so it runs in order in the Collection Runner.
+  - Folder 2: lists and pagination.
+  - Folder 3: every error code.
+  - Every request has tests. `tenantId`, `taskId`, `slug`, `version` and `cursor` are captured into collection variables; `baseUrl` defaults to `http://localhost:8080`.
+  - One bug caught before running it: the PATCH body had the version as a quoted `"{{version}}"`, which would reach the API as a string and be rejected.
+  - Verified with Newman against the live stack: 31 requests (including polls), 46 assertions, 0 failures. README.md links it, with the headless Newman command.
 
 ## Open issues
 
@@ -175,3 +203,4 @@ Anything found along the way that isn't fixed in the current subtask.
 
 - **golangci-lint reports at most one issue per line** (its default). A gosec finding can hide behind an errcheck finding on the same line until the first one is fixed. That's harmless, because the gate still fails, but it can look like gosec missed something.
 - **gin links `go.mongodb.org/mongo-driver` into the binary** through its BSON binding and render packages, which have no build tag to leave them out. The cost is binary size only (about 26 MB unstripped); nothing calls BSON, and `govulncheck` only reports code that is reachable.
+- **Unexplained: the dev stack's `controlplane` container disappeared once** (not exited: removed), and Postgres and RabbitMQ were recreated, some time after the `.env` changes and around the first `make race`. Docker's event history had already rotated (the health checks' exec events fill it), so the cause couldn't be traced. It did not reproduce: `make race` and its `up -d --wait postgres rabbitmq` step were rerun and left the control plane untouched, as did several `race-demo` runs. The stack was restored with `make up`, with no data lost. Worth watching; if it recurs, capture `docker events` while it happens.

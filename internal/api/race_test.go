@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -259,7 +261,7 @@ func (rs *raceServer) race(t *testing.T, n int, build func(i int) *http.Request)
 	if peak := rs.maxInFlight.Load(); peak < 2 {
 		t.Fatalf("at most %d request(s) in flight at once: the requests did not overlap", peak)
 	}
-	t.Logf("%d requests, up to %d in flight at once", n, rs.maxInFlight.Load())
+	t.Logf("%d requests, up to %d in flight at once → %s", n, rs.maxInFlight.Load(), tally(results))
 	return results
 }
 
@@ -362,6 +364,24 @@ func assertOutcomes(t *testing.T, results []result, want map[outcome]int) {
 			t.Fatalf("outcomes = %v, want %v", got, want)
 		}
 	}
+}
+
+// tally renders outcome counts for the log, e.g. "1 × 202, 49 × 409 tenant_version_conflict".
+func tally(results []result) string {
+	counts := map[string]int{}
+	for _, r := range results {
+		key := fmt.Sprint(r.status)
+		if r.code != "" {
+			key += " " + r.code
+		}
+		counts[key]++
+	}
+	keys := slices.Sorted(maps.Keys(counts))
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%d × %s", counts[k], k)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func winnerBody(t *testing.T, results []result) string {

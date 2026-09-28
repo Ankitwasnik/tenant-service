@@ -2,6 +2,14 @@
 
 COMPOSE := docker compose
 
+# compose.yaml has no defaults: every setting comes from .env (git-ignored).
+# On a fresh clone there is no .env yet, so create it from the template;
+# an existing .env is never touched.
+ifeq ($(wildcard .env),)
+$(shell cp .env.template .env)
+$(info Created .env from .env.template)
+endif
+
 # Test isolation: a throwaway database and RabbitMQ vhost on the dev stack's
 # containers. Must match the `tests` service URLs in compose.yaml.
 TEST_DB    := controlplane_test
@@ -15,7 +23,7 @@ GO   := $(COMPOSE) run --rm --no-deps tests
 # sqlc runs as the host user, so generated files aren't owned by root on Linux.
 SQLC := $(COMPOSE) run --rm --no-deps --user "$(shell id -u):$(shell id -g)" sqlc
 
-.PHONY: up down clean logs worker check fmt fmt-check lint vuln generate sqlc-check test test-reset test-drop
+.PHONY: up down clean logs worker race race-demo check fmt fmt-check lint vuln generate sqlc-check test test-reset test-drop
 
 ## up: build and start the whole stack, and wait until every service is healthy
 up:
@@ -25,9 +33,11 @@ up:
 down:
 	$(COMPOSE) down
 
-## clean: like down, and also remove the volumes, for a fresh start
+## clean: like down, and also remove the volumes (data and the Go/lint caches), for a fresh start
+# The profiles are needed: down skips services whose profile isn't active,
+# and with them the cache volumes that only the tests and lint services use.
 clean:
-	$(COMPOSE) down --volumes
+	$(COMPOSE) --profile test --profile tools down --volumes
 
 ## logs: follow the logs of every service
 logs:
@@ -58,7 +68,7 @@ fmt-check:
 ## lint: static analysis: golangci-lint (including gosec) for Go, shellcheck for scripts/
 lint:
 	$(LINT) golangci-lint run
-	$(COMPOSE) run --rm --no-deps shellcheck scripts/*.sh
+	$(COMPOSE) run --rm --no-deps shellcheck -x -P SCRIPTDIR scripts/*.sh scripts/lib/*.sh
 
 ## generate: regenerate the sqlc code in internal/store/sqlcgen (committed)
 generate:
@@ -82,6 +92,23 @@ test:
 	@$(COMPOSE) run --rm tests go test -race -count=1 -timeout 5m ./...; status=$$?; \
 	$(MAKE) --no-print-directory test-drop; \
 	exit $$status
+
+## race: run just the concurrency tests, verbosely, with each race's outcome counts
+# The in-repo demonstration that the race conditions are handled: concurrent
+# HTTP creates/PATCHes/DELETEs, concurrent delivery of worker updates, several
+# relays on one outbox, many tenants at once. Same isolation as make test.
+RACE_TESTS := TestRace|TestApplyUpdateConcurrent|TestConcurrentRelays|TestLifecycleManyTenants
+race:
+	$(COMPOSE) up -d --wait postgres rabbitmq
+	@$(MAKE) --no-print-directory test-reset
+	@$(COMPOSE) run --rm tests go test -race -count=1 -timeout 5m -v -run '$(RACE_TESTS)' \
+		./internal/api/ ./internal/store/ ./internal/outbox/ ./internal/e2e/; status=$$?; \
+	$(MAKE) --no-print-directory test-drop; \
+	exit $$status
+
+## race-demo: fire concurrent requests at the running stack (make up) and tally the results
+race-demo:
+	scripts/race-demo.sh $(ARGS)
 
 # The containers' own POSTGRES_USER / RABBITMQ_DEFAULT_USER are used, so the
 # credentials live only in compose.yaml.
